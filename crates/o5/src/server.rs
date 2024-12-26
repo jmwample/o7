@@ -1,6 +1,5 @@
 #![allow(unused)] // TODO: Remove this
 
-use super::*;
 use crate::{
     client::ClientBuilder,
     common::{
@@ -11,12 +10,10 @@ use crate::{
     constants::*,
     framing::{FrameError, Marshall, O5Codec, TryParse, KEY_LENGTH},
     proto::{MaybeTimeout, O5Stream},
-    sessions::Session,
-    Error, Result,
+    sessions::{Session, ServerSession, Initialized},
+    handshake::{IdentityPublicKey, IdentitySecretKey},
+    Digest, Error, Result,
 };
-use handshake::{IdentityPublicKey, IdentitySecretKey};
-use ptrs::args::Args;
-use tor_cell::relaycell::extend::NtorV3Extension;
 
 use std::{
     borrow::BorrowMut, marker::PhantomData, ops::Deref, str::FromStr, string::ToString, sync::Arc,
@@ -26,24 +23,26 @@ use bytes::{Buf, BufMut, Bytes};
 use hex::FromHex;
 use hmac::{Hmac, Mac};
 use kemeleon::OKemCore;
-use ptrs::{debug, info};
+use ptrs::{debug, info, args::Args};
 use rand::prelude::*;
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
 use tokio_util::codec::Encoder;
+use tor_cell::relaycell::extend::NtorV3Extension;
 
 const STATE_FILENAME: &str = "obfs4_state.json";
 
-pub struct ServerBuilder<T, K: OKemCore> {
+pub struct ServerBuilder<T, K: OKemCore, D: Digest> {
     pub statefile_path: Option<String>,
     pub(crate) identity_keys: IdentitySecretKey<K>,
     pub(crate) handshake_timeout: MaybeTimeout,
     // pub(crate) drbg: Drbg, // TODO: build in DRBG
     _stream_type: PhantomData<T>,
+    _digest_type: PhantomData<D>,
 }
 
-impl<T, K: OKemCore> Default for ServerBuilder<T, K> {
+impl<T, K: OKemCore, D: Digest> Default for ServerBuilder<T, K, D> {
     fn default() -> Self {
         let identity_keys = IdentitySecretKey::<K>::random_from_rng(&mut rand::thread_rng());
         Self {
@@ -51,11 +50,12 @@ impl<T, K: OKemCore> Default for ServerBuilder<T, K> {
             identity_keys,
             handshake_timeout: MaybeTimeout::Default_,
             _stream_type: PhantomData,
+            _digest_type: PhantomData,
         }
     }
 }
 
-impl<T, K: OKemCore> ServerBuilder<T, K> {
+impl<T, K: OKemCore, D: Digest> ServerBuilder<T, K, D> {
     /// 64 byte combined representation of an x25519 public key, private key
     /// combination.
     pub fn node_keys(&mut self, keys: impl AsRef<[u8]>) -> Result<&Self> {
@@ -95,14 +95,15 @@ impl<T, K: OKemCore> ServerBuilder<T, K> {
         params.encode_smethod_args()
     }
 
-    pub fn build(self) -> Server<K> {
-        Server::<K>(Arc::new(ServerInner::<K> {
+    pub fn build(self) -> Server<K, D> {
+        Server::<K,D>(Arc::new(ServerCore::<K, D> {
             identity_keys: self.identity_keys,
             biased: false,
             handshake_timeout: self.handshake_timeout.duration(),
 
             // metrics: Arc::new(std::sync::Mutex::new(ServerMetrics {})),
             replay_filter: ReplayFilter::new(REPLAY_TTL),
+            _digest_type: PhantomData::<D>,
         }))
     }
 
@@ -213,36 +214,39 @@ impl<K: OKemCore> TryFrom<&Args> for RequiredServerState<K> {
 }
 
 #[derive(Clone)]
-pub struct Server<K: OKemCore>(Arc<ServerInner<K>>);
+pub struct Server<K: OKemCore, D: Digest>(Arc<ServerCore<K, D>>);
 
-pub struct ServerInner<K: OKemCore> {
+pub struct ServerCore<K: OKemCore, D: Digest> {
     pub(crate) handshake_timeout: Option<tokio::time::Duration>,
     pub(crate) biased: bool,
     pub(crate) identity_keys: IdentitySecretKey<K>,
 
     pub(crate) replay_filter: ReplayFilter,
+
+    _digest_type: PhantomData<D>,
 }
 
-impl<K: OKemCore> Deref for Server<K> {
-    type Target = ServerInner<K>;
+impl<K: OKemCore, D: Digest> Deref for Server<K, D> {
+    type Target = ServerCore<K, D>;
     fn deref(&self) -> &Self::Target {
         self.0.as_ref()
     }
 }
 
-impl<K: OKemCore> Server<K> {
+impl<K: OKemCore, D: Digest> Server<K, D> {
     pub fn new(identity: IdentitySecretKey<K>) -> Self {
         Self::new_from_key(identity)
     }
 
     pub(crate) fn new_from_key(identity_keys: IdentitySecretKey<K>) -> Self {
-        Self(Arc::new(ServerInner {
+        Self(Arc::new(ServerCore {
             handshake_timeout: Some(SERVER_HANDSHAKE_TIMEOUT),
             identity_keys,
             biased: false,
 
             // metrics: Arc::new(std::sync::Mutex::new(ServerMetrics {})),
             replay_filter: ReplayFilter::new(REPLAY_TTL),
+            _digest_type: PhantomData::<D>,
         }))
     }
 
@@ -283,20 +287,21 @@ impl<K: OKemCore> Server<K> {
         Err(Error::NotImplemented)
     }
 
-    pub fn client_params(&self) -> ClientBuilder<K> {
-        ClientBuilder::<K> {
+    pub fn client_params(&self) -> ClientBuilder<K, D> {
+        ClientBuilder::<K, D> {
             node_details: Some(self.identity_keys.pk.clone()),
             statefile_path: None,
             handshake_timeout: MaybeTimeout::Default_,
+            _digest: PhantomData::<D>,
         }
     }
 
     pub(crate) fn new_server_session(
         &self,
-    ) -> Result<sessions::ServerSession<sessions::Initialized>> {
+    ) -> Result<ServerSession<Initialized>> {
         let mut session_id = [0u8; SESSION_ID_LEN];
         rand::thread_rng().fill_bytes(&mut session_id);
-        Ok(sessions::ServerSession {
+        Ok(ServerSession {
             // fixed by server
             biased: self.biased,
 
@@ -305,7 +310,7 @@ impl<K: OKemCore> Server<K> {
             len_seed: drbg::Seed::new().unwrap(),
             ipt_seed: drbg::Seed::new().unwrap(),
 
-            _state: sessions::Initialized {},
+            _state: Initialized {},
         })
     }
 
@@ -322,6 +327,7 @@ mod tests {
 
     use kemeleon::MlKem768;
     use ptrs::trace;
+    use sha3::Sha3_256;
     use tokio::net::TcpStream;
 
     use crate::test_utils::init_subscriber;
@@ -334,7 +340,7 @@ mod tests {
         let test_state = format!(
             r#"{{"{NODE_ID_ARG}": "00112233445566778899", "{PRIVATE_KEY_ARG}":"0123456789abcdeffedcba9876543210", "{SEED_ARG}": "abcdefabcdefabcdefabcdef"}}"#
         );
-        ServerBuilder::<TcpStream, MlKem768>::server_state_from_json(
+        ServerBuilder::<TcpStream, MlKem768, Sha3_256>::server_state_from_json(
             test_state.as_bytes(),
             &mut args,
         )?;

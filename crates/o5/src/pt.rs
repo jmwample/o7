@@ -1,5 +1,6 @@
-use crate::{constants::*, handshake::IdentityPublicKey, proto::O5Stream, Error, TRANSPORT_NAME};
-use ptrs::{args::Args, FutureResult as F};
+use crate::{
+    constants::*, handshake::IdentityPublicKey, proto::O5Stream, Digest, Error, TRANSPORT_NAME,
+};
 
 use std::{
     marker::PhantomData,
@@ -11,56 +12,59 @@ use std::{
 
 use hex::FromHex;
 use kemeleon::{Encode, MlKem768, OKemCore};
-use ptrs::trace;
+use ptrs::{args::Args, trace, FutureResult as F};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
 };
 
-pub type O5PT = Transport<TcpStream, MlKem768>; // TODO: SWAP TO X-WING
+pub type O5PT = Transport<TcpStream, MlKem768, sha3::Sha3_256>; // TODO: SWAP TO X-WING
 
 #[derive(Debug, Default)]
-pub struct Transport<T, K> {
+pub struct Transport<T, K, D> {
     _p: PhantomData<T>,
     _k: PhantomData<K>,
+    _d: PhantomData<D>,
 }
-impl<T, K> Transport<T, K> {
+impl<T, K, D> Transport<T, K, D> {
     pub const NAME: &'static str = TRANSPORT_NAME;
 }
 
-impl<T, K> ptrs::PluggableTransport<T> for Transport<T, K>
+impl<T, K, D> ptrs::PluggableTransport<T> for Transport<T, K, D>
 where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     K: OKemCore + Send + Sync + 'static,
+    D: Digest + Send + Sync + 'static,
     <K as OKemCore>::EncapsulationKey: Send + Sync,
     <K as OKemCore>::DecapsulationKey: Send + Sync,
 {
-    type ClientBuilder = crate::ClientBuilder<K>;
-    type ServerBuilder = crate::ServerBuilder<T, K>;
+    type ClientBuilder = crate::ClientBuilder<K, D>;
+    type ServerBuilder = crate::ServerBuilder<T, K, D>;
 
     fn name() -> String {
         TRANSPORT_NAME.into()
     }
 
     fn client_builder() -> <Self as ptrs::PluggableTransport<T>>::ClientBuilder {
-        crate::ClientBuilder::<K>::default()
+        crate::ClientBuilder::<K, D>::default()
     }
 
     fn server_builder() -> <Self as ptrs::PluggableTransport<T>>::ServerBuilder {
-        crate::ServerBuilder::<T, K>::default()
+        crate::ServerBuilder::<T, K, D>::default()
     }
 }
 
-impl<T, K> ptrs::ServerBuilder<T> for crate::ServerBuilder<T, K>
+impl<T, K, D> ptrs::ServerBuilder<T> for crate::ServerBuilder<T, K, D>
 where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     K: OKemCore + Send + Sync + 'static,
+    D: Digest + Send + Sync + 'static,
     <K as OKemCore>::EncapsulationKey: Send + Sync,
     <K as OKemCore>::DecapsulationKey: Send + Sync,
 {
-    type ServerPT = crate::Server<K>;
+    type ServerPT = crate::Server<K, D>;
     type Error = Error;
-    type Transport = Transport<T, K>;
+    type Transport = Transport<T, K, D>;
 
     fn build(self) -> Self::ServerPT {
         crate::ServerBuilder::build(self)
@@ -106,27 +110,28 @@ where
     }
 }
 
-impl<T, K> ptrs::ClientBuilder<T> for crate::ClientBuilder<K>
+impl<T, K, D> ptrs::ClientBuilder<T> for crate::ClientBuilder<K, D>
 where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     K: OKemCore + Send + Sync + 'static,
+    D: Digest + Send + Sync + 'static,
     <K as OKemCore>::EncapsulationKey: Send + Sync,
     <K as OKemCore>::DecapsulationKey: Send + Sync,
 {
-    type ClientPT = crate::Client<K>;
+    type ClientPT = crate::Client<K, D>;
     type Error = Error;
-    type Transport = Transport<T, K>;
+    type Transport = Transport<T, K, D>;
 
     fn method_name() -> String {
         TRANSPORT_NAME.into()
-    }
+}
 
     /// Builds a new PtCommonParameters.
     ///
     /// **Errors**
     /// If a required field has not been initialized.
     fn build(&self) -> Self::ClientPT {
-        crate::ClientBuilder::<K>::build(self)
+        crate::ClientBuilder::<K, D>::build(self)
     }
 
     /// Pluggable transport attempts to parse and validate options from a string,
@@ -194,17 +199,18 @@ where
 
 /// Example wrapping transport that just passes the incoming connection future through
 /// unmodified as a proof of concept.
-impl<InRW, InErr, K> ptrs::ClientTransport<InRW, InErr> for crate::Client<K>
+impl<InRW, InErr, K, D> ptrs::ClientTransport<InRW, InErr> for crate::Client<K, D>
 where
     InRW: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     InErr: std::error::Error + Send + Sync + 'static,
     K: OKemCore + Send + Sync + 'static,
+    D: Digest + Send + Sync + 'static,
     <K as OKemCore>::EncapsulationKey: Send + Sync,
     <K as OKemCore>::DecapsulationKey: Send + Sync,
 {
     type OutRW = O5Stream<InRW, K>;
     type OutErr = Error;
-    type Builder = crate::ClientBuilder<K>;
+    type Builder = crate::ClientBuilder<K, D>;
 
     fn establish(self, input: Pin<F<InRW, InErr>>) -> Pin<F<Self::OutRW, Self::OutErr>> {
         Box::pin(Self::establish::<InRW, InErr>(self, input))
@@ -219,16 +225,17 @@ where
     }
 }
 
-impl<InRW, K> ptrs::ServerTransport<InRW> for crate::Server<K>
+impl<InRW, K, D> ptrs::ServerTransport<InRW> for crate::Server<K, D>
 where
     InRW: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     K: OKemCore + Send + Sync + 'static,
+    D: Digest + Send + Sync + 'static,
     <K as OKemCore>::EncapsulationKey: Send + Sync,
     <K as OKemCore>::DecapsulationKey: Send + Sync,
 {
     type OutRW = O5Stream<InRW, K>;
     type OutErr = Error;
-    type Builder = crate::ServerBuilder<InRW, K>;
+    type Builder = crate::ServerBuilder<InRW, K, D>;
 
     /// Use something that can be accessed reference (Arc, Rc, etc.)
     fn reveal(self, io: InRW) -> Pin<F<Self::OutRW, Self::OutErr>> {
@@ -247,6 +254,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use sha3::Sha3_256;
 
     #[test]
     fn check_name() {
@@ -254,19 +262,19 @@ mod test {
         assert_eq!(pt_name, O5PT::NAME);
 
         let cb_name =
-            <crate::ClientBuilder<MlKem768> as ptrs::ClientBuilder<TcpStream>>::method_name();
+            <crate::ClientBuilder<MlKem768, Sha3_256> as ptrs::ClientBuilder<TcpStream>>::method_name();
         assert_eq!(cb_name, O5PT::NAME);
 
-        let sb_name = <crate::ServerBuilder<TcpStream, MlKem768> as ptrs::ServerBuilder<
+        let sb_name = <crate::ServerBuilder<TcpStream, MlKem768, Sha3_256> as ptrs::ServerBuilder<
             TcpStream,
         >>::method_name();
         assert_eq!(sb_name, O5PT::NAME);
 
         let ct_name =
-            <crate::Client<MlKem768> as ptrs::ClientTransport<TcpStream, crate::Error>>::method_name();
+            <crate::Client<MlKem768, Sha3_256> as ptrs::ClientTransport<TcpStream, crate::Error>>::method_name();
         assert_eq!(ct_name, O5PT::NAME);
 
-        let st_name = <crate::Server<MlKem768> as ptrs::ServerTransport<TcpStream>>::method_name();
+        let st_name = <crate::Server<MlKem768, Sha3_256> as ptrs::ServerTransport<TcpStream>>::method_name();
         assert_eq!(st_name, O5PT::NAME);
     }
 }

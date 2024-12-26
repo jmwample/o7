@@ -8,6 +8,7 @@ pub mod framing;
 pub mod proto;
 pub mod server;
 pub use client::{Client, ClientBuilder};
+use digest::FixedOutputReset;
 pub use server::{Server, ServerBuilder};
 
 pub(crate) mod constants;
@@ -40,6 +41,10 @@ pub mod dev {
     /// Server obfs4 arguments based on pre-generated dev key `DEV_PRIV_KEY`.
     pub const SERVER_ARGS: &str = "drbg-seed=0a0b0c0d0e0f0a0b0c0d0e0f0a0b0c0d0e0f0a0b0c0d0e0f;node-id=0000000000000000000000000000000000000000;private-key=3031323334353637383961626364656666656463626139383736353433323130";
 }
+
+pub trait Digest: digest::Digest + digest::core_api::BlockSizeUser + digest::FixedOutputReset + Clone {}
+
+impl<D: digest::Digest + digest::core_api::BlockSizeUser + digest::FixedOutputReset + Clone> Digest for D {}
 
 /*
 #[cfg(test)]

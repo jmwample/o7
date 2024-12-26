@@ -2,12 +2,13 @@ use crate::{test_utils::init_subscriber, Result, Server};
 
 use kemeleon::MlKem768;
 use ptrs::{debug, trace};
+use sha3::Sha3_256;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use std::cmp::Ordering;
 use std::time::Duration;
 
-type ServerMK768 = Server<MlKem768>;
+pub(crate) type ServerMK768 = Server<MlKem768, Sha3_256>;
 
 #[tokio::test]
 async fn public_handshake() -> Result<()> {

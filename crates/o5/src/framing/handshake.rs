@@ -8,16 +8,16 @@ use crate::{
         decrypt, encrypt, Authcode, CHSMaterials, EphemeralKey, EphemeralPub, SessionSharedSecret,
         AUTHCODE_LENGTH, ENC_KEY_LEN,
     },
-    Error, Result,
+    Digest, Error, Result,
 };
 
 use block_buffer::Eager;
 use bytes::{BufMut, BytesMut};
 use digest::{
     core_api::{BlockSizeUser, BufferKindUser, CoreProxy, FixedOutputCore, UpdateCore},
-    HashMarker,
+    HashMarker, Digest as _,
 };
-use hmac::{Hmac, Mac};
+use hmac::{Mac, SimpleHmac};
 use kem::{Decapsulate, Encapsulate};
 use kemeleon::{Encode, OKemCore};
 use ptrs::trace;
@@ -199,8 +199,16 @@ pub struct ClientStateOutgoing<K: OKemCore> {
 impl<K: OKemCore> ChsState for ClientStateOutgoing<K> {}
 
 /// State tracked when parsing and operating on an incoming client handshake
-pub struct ClientStateIncoming {}
+pub struct ClientStateIncoming {
+    ephemeral_secret: Zeroizing<[u8; 32]>,
+}
 impl ChsState for ClientStateIncoming {}
+
+impl ClientStateIncoming {
+    pub(crate) fn new(ephemeral_secret: Zeroizing<[u8; 32]>) -> Self {
+        Self { ephemeral_secret }
+    }
+}
 
 impl<K> ClientHandshakeMessage<K, ClientStateIncoming>
 where
@@ -217,6 +225,10 @@ where
             state,
             epoch_hour: epoch_hour.unwrap_or(get_epoch_hour().to_string()),
         }
+    }
+
+    pub(crate) fn get_ephemeral_secret(&self) -> Zeroizing<[u8; 32]> {
+        self.state.ephemeral_secret.clone()
     }
 }
 
@@ -273,22 +285,11 @@ where
         self.marshall_inner::<Sha3_256>(rng, buf)
     }
 
-    fn marshall_inner<D>(
+    fn marshall_inner<D: Digest>(
         &mut self,
         rng: &mut impl CryptoRngCore,
         buf: &mut impl BufMut,
-    ) -> EncodeResult<Zeroizing<[u8; ENC_KEY_LEN]>>
-    where
-        D: CoreProxy,
-        D::Core: HashMarker
-            + UpdateCore
-            + FixedOutputCore
-            + BufferKindUser<BufferKind = Eager>
-            + Default
-            + Clone,
-        <D::Core as BlockSizeUser>::BlockSize: IsLess<U256>,
-        Le<<D::Core as BlockSizeUser>::BlockSize, U256>: NonZero,
-    {
+    ) -> EncodeResult<Zeroizing<[u8; ENC_KEY_LEN]>> {
         // serialize our extensions into a message
         let mut message = BytesMut::new();
         NtorV3Extension::write_many_onto(self.state.hs_materials.aux_data.borrow(), &mut message)?;
@@ -302,13 +303,13 @@ where
 
         // compute our ephemeral secret
         let mut f2 =
-            Hmac::<D>::new_from_slice(node_id.as_bytes()).expect("keying hmac should never fail");
+            SimpleHmac::<D>::new_from_slice(node_id.as_bytes()).expect("keying hmac should never fail");
         f2.update(&shared_secret.as_bytes()[..]);
         let mut ephemeral_secret = Zeroizing::new([0u8; ENC_KEY_LEN]);
         ephemeral_secret.copy_from_slice(&f2.finalize_reset().into_bytes()[..ENC_KEY_LEN]);
 
         // set up our hash fn
-        let mut f1_es = Hmac::<D>::new_from_slice(ephemeral_secret.as_ref())
+        let mut f1_es = SimpleHmac::<D>::new_from_slice(ephemeral_secret.as_ref())
             .expect("keying hmac should never fail");
 
         // compute the Mark

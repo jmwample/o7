@@ -8,14 +8,14 @@ use crate::{
     constants::*,
     framing::{ClientHandshakeMessage, ClientStateIncoming, ClientStateOutgoing},
     handshake::*,
-    Error, Result, Server,
+    Digest, Error, Result, Server,
 };
 
 use std::time::Instant;
 
 // use cipher::KeyIvInit;
-use digest::{Digest, ExtendableOutput, XofReader};
-use hmac::{Hmac, Mac};
+use digest::{Digest as _, ExtendableOutput as _, XofReader as _};
+use hmac::{Mac, SimpleHmac};
 use kem::{Decapsulate, Encapsulate};
 use kemeleon::OKemCore;
 use keys::NtorV3KeyGenerator;
@@ -46,7 +46,7 @@ impl HandshakeMaterials {
     }
 }
 
-impl<K: OKemCore> ServerHandshake for Server<K> {
+impl<K: OKemCore, D: Digest> ServerHandshake for Server<K, D> {
     type HandshakeParams = SHSMaterials;
     type KeyGen = NtorV3KeyGenerator;
     type ClientAuxData = [NtorV3Extension];
@@ -78,7 +78,7 @@ impl<K: OKemCore> ServerHandshake for Server<K> {
     }
 }
 
-impl<K: OKemCore> Server<K> {
+impl<K: OKemCore, D: Digest> Server<K, D> {
     const CLIENT_CT_SIZE: usize = CtSize::<K>::USIZE;
     const CLIENT_EK_SIZE: usize = EkSize::<K>::USIZE;
 
@@ -100,12 +100,9 @@ impl<K: OKemCore> Server<K> {
         materials: &HandshakeMaterials,
         verification: &[u8],
     ) -> RelayHandshakeResult<(Vec<u8>, NtorV3XofReader)> {
-        let (dk_session, _ek_session) = K::generate(rng);
-        let ephemeral_dk = EphemeralKey::new(dk_session);
         self.server_handshake_ntor_v3_no_keygen(
             rng,
             reply_fn,
-            &ephemeral_dk,
             message,
             materials,
             verification,
@@ -117,7 +114,6 @@ impl<K: OKemCore> Server<K> {
         &self,
         rng: &mut impl CryptoRngCore,
         reply_fn: &mut impl MsgReply,
-        secret_key_y: &EphemeralKey<K>,
         message: impl AsRef<[u8]>,
         materials: &HandshakeMaterials,
         verification: &[u8],
@@ -145,7 +141,17 @@ impl<K: OKemCore> Server<K> {
             "{} successfully parsed client handshake",
             materials.session_id
         );
-        let their_pk = client_hs.get_public();
+        let client_session_ek = client_hs.get_public();
+        let ephemeral_secret = client_hs.get_ephemeral_secret();
+
+        let (ciphertext, shared_secret_2) = client_session_ek.encapsulate(rng).map_err(|_| RelayHandshakeError::FailedEncapsulation)?;
+
+        // set up our hash fn
+        let mut f1_es = SimpleHmac::<D>::new_from_slice(ephemeral_secret.as_ref())
+            .expect("keying hmac should never fail");
+
+        // Handle extension messages and (optionally) craft a reply.
+        // let reply = reply_fn.reply(&plaintext_msg);
 
         // let xb = keypair
         //     .hpke(rng, &client_pk)
@@ -169,8 +175,6 @@ impl<K: OKemCore> Server<K> {
 
         // let plaintext_msg = decrypt(&enc_key, client_msg);
 
-        // // Handle the message and decide how to reply.
-        // let reply = reply_fn.reply(&plaintext_msg);
 
         // // It's not exactly constant time to use is_some() and
         // // unwrap_or_else() here, but that should be somewhat
@@ -231,14 +235,14 @@ impl<K: OKemCore> Server<K> {
 
         // Compute the Ephemeral Secret
         let node_id = self.get_identity().id;
-        let mut f2 = Hmac::<Sha3_256>::new_from_slice(node_id.as_bytes())
+        let mut f2 = SimpleHmac::<Sha3_256>::new_from_slice(node_id.as_bytes())
             .expect("keying server f2 hmac should never fail");
         f2.update(&shared_secret_1.as_bytes()[..]);
         let mut ephemeral_secret = Zeroizing::new([0u8; ENC_KEY_LEN]);
         ephemeral_secret.copy_from_slice(&f2.finalize_reset().into_bytes()[..ENC_KEY_LEN]);
 
         // derive the mark from the Ephemeral Secret
-        let mut f1_es = Hmac::<Sha3_256>::new_from_slice(ephemeral_secret.as_ref())
+        let mut f1_es = SimpleHmac::<Sha3_256>::new_from_slice(ephemeral_secret.as_ref())
             .expect("Keying server f1_es hmac should never fail");
         f1_es.update(&client_ek_obfs);
         f1_es.update(&client_ct_obfs);
@@ -283,7 +287,10 @@ impl<K: OKemCore> Server<K> {
             f1_es.reset();
             f1_es.update(&buf[..pos + MARK_LENGTH]);
             f1_es.update(eh.as_bytes());
+            f1_es.update(CLIENT_MAC_ARG.as_bytes());
             let mac_calculated = &f1_es.finalize_reset().into_bytes()[..MAC_LENGTH];
+
+            // check received mac
             let mac_received = &buf[pos + MARK_LENGTH..pos + MARK_LENGTH + MAC_LENGTH];
             trace!(
                 "server {}-{}",
@@ -305,18 +312,23 @@ impl<K: OKemCore> Server<K> {
 
                 epoch_hour = eh;
                 mac_found = true;
-                // we could break here, but in the name of reducing timing
-                // variance, we just evaluate all three MACs.
+
+                // We break here, but if this creates some kind of timing channel
+                // (not sure exactly what that would be) we could reduce timing variance by
+                // just evaluating all three MACs. Probably not necessary
+                break
             }
         }
 
         if !mac_found {
             // This could be a [`RelayHandshakeError::TagMismatch`] :shrug:
+            trace!("Matching MAC not found");
             Err(RelayHandshakeError::BadClientHandshake)?
         }
 
         // client should never send any appended padding at the end.
         if buf.len() != pos + MARK_LENGTH + MAC_LENGTH {
+            trace!("client sent extra data");
             Err(RelayHandshakeError::BadClientHandshake)?
         }
 
@@ -325,14 +337,15 @@ impl<K: OKemCore> Server<K> {
             .map_err(|_| RelayHandshakeError::FailedParse)?;
         Ok(ClientHandshakeMessage::<K, ClientStateIncoming>::new(
             client_ephemeral_ek,
-            ClientStateIncoming {},
+            ClientStateIncoming::new(ephemeral_secret),
             Some(epoch_hour),
         ))
 
         // Is it important that the context for the auth HMAC uses the non obfuscated encoding of the
         // ciphertext sent by the client (ciphertext created using the server's identity encapsulaation
         // key) as opposed to the obfuscated encoding?
-
+        //
+        // No this should not impact things.
 
         // -----------------------------------[NTor V3]-------------------------------
         // // TODO: Maybe use the Reader / Ntor interface, it is nice and clean.

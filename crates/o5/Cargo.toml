@@ -10,6 +10,9 @@ keywords = ["tor", "censorship", "pluggable", "transports"]
 categories = ["network-programming", "cryptography"]
 repository = "https://github.com/jmwample/ptrs"
 
+[features]
+default = ["debug"] # TODO: make debug non-default
+debug = ["ptrs/debug"]
 
 [lib]
 name = "o5"

@@ -8,7 +8,7 @@
 use crate::common::ntor_arti::ClientHandshakeComplete;
 
 use cipher::{KeyIvInit as _, StreamCipher as _};
-use digest::{Digest, ExtendableOutput, XofReader};
+use digest::{Digest as _, ExtendableOutput as _, XofReader as _};
 use kemeleon::{Encode, OKemCore};
 use tor_bytes::{EncodeResult, Writeable, Writer};
 use tor_llcrypto::cipher::aes::Aes256Ctr;
@@ -274,6 +274,7 @@ mod test {
         ClientHandshake, ClientHandshakeComplete, KeyGenerator, ServerHandshake,
     };
     use crate::constants::{NODE_ID_LENGTH, SEED_LENGTH};
+    use crate::test_utils::init_subscriber;
     use crate::Server;
 
     use super::*;
@@ -293,6 +294,7 @@ mod test {
 
     #[test]
     fn test_ntor3_roundtrip() {
+        init_subscriber();
         let mut rng = rand::thread_rng();
         let relay_private = IdentitySecretKey::random_from_rng(&mut testing_rng());
 
@@ -313,8 +315,8 @@ mod test {
         }
         let mut rep = Rep(Vec::new(), relay_message.to_vec());
 
-        let server = Server::<MlKem768>::new(relay_private);
-        let shs_materials = SHSMaterials::new("test_seriver".into(), [0u8; SEED_LENGTH]);
+        let server = Server::<MlKem768, Sha3_256>::new(relay_private);
+        let shs_materials = SHSMaterials::new("test_server_000".into(), [0u8; SEED_LENGTH]);
         let (s_handshake, mut s_keygen) = server
             .server_handshake_ntor_v3(
                 &mut rng,
@@ -344,6 +346,7 @@ mod test {
     // Same as previous test, but use the higher-level APIs instead.
     #[test]
     fn test_ntor3_roundtrip_highlevel() {
+        init_subscriber();
         let relay_private = IdentitySecretKey::random_from_rng(&mut testing_rng());
 
         let materials = CHSMaterials::new(&relay_private.pk, "fake_session_id-1".into());
@@ -351,7 +354,7 @@ mod test {
 
         let mut rep = |_: &[NtorV3Extension]| Some(vec![]);
 
-        let server = Server::<MlKem768>::new_from_random(&mut thread_rng());
+        let server = Server::<MlKem768, Sha3_256>::new_from_random(&mut thread_rng());
         let shs_materials = SHSMaterials {
             len_seed: [0u8; SEED_LENGTH],
             session_id: "roundtrip_test_serverside".into(),
@@ -373,6 +376,7 @@ mod test {
     // Same as previous test, but encode some congestion control extensions.
     #[test]
     fn test_ntor3_roundtrip_highlevel_cc() {
+        init_subscriber();
         let relay_private = IdentitySecretKey::random_from_rng(&mut testing_rng());
 
         let client_exts = vec![NtorV3Extension::RequestCongestionControl];
@@ -391,7 +395,7 @@ mod test {
             len_seed: [0u8; SEED_LENGTH],
             session_id: "roundtrip_test_serverside".into(),
         };
-        let server = Server::<MlKem768>::new_from_random(&mut thread_rng());
+        let server = Server::<MlKem768, Sha3_256>::new_from_random(&mut thread_rng());
         let (s_keygen, s_handshake) = server
             .server(&mut rep, &shs_materials, &c_handshake)
             .unwrap();
@@ -411,7 +415,7 @@ mod test {
         let mut rng = rand::thread_rng();
         let b = hex::decode(KEYS[0].b).expect("failed to unhex b");
         let id = <[u8; NODE_ID_LENGTH]>::from_hex(KEYS[0].id).unwrap();
-        let x = hex::decode(KEYS[0].x).expect("failed to unhex x");
+            let x = hex::decode(KEYS[0].x).expect("failed to unhex x");
         let y = hex::decode(KEYS[0].y).expect("failed to unhex y");
         let b = Decap::<K>::try_from_bytes(&b[..]).expect("failed to parse b");
         let B = b.encapsulation_key(); // K::EncapsulationKey::from(&b);
@@ -451,12 +455,11 @@ mod test {
             len_seed: [0u8; SEED_LENGTH],
         };
 
-        let server = Server::<MlKem768>::new(relay_private);
+        let server = Server::<MlKem768, Sha3_256>::new(relay_private);
         let (server_handshake, mut server_keygen) = server
             .server_handshake_ntor_v3_no_keygen(
                 &mut rng,
                 &mut rep,
-                &EphemeralKey::new(y),
                 &client_handshake,
                 materials,
                 &verification,

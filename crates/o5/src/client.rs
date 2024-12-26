@@ -6,7 +6,7 @@ use crate::{
     framing::{FrameError, Marshall, O5Codec, TryParse, KEY_LENGTH, KEY_MATERIAL_LENGTH},
     handshake::IdentityPublicKey,
     proto::{MaybeTimeout, O5Stream},
-    sessions, Error, Result,
+    sessions, Digest, Error, Result,
 };
 
 use bytes::{Buf, BufMut, BytesMut};
@@ -23,31 +23,37 @@ use std::{
     io::{Error as IoError, ErrorKind as IoErrorKind},
     pin::Pin,
     sync::{Arc, Mutex},
+    marker::PhantomData,
 };
 
 #[derive(Clone, Debug)]
-pub struct ClientBuilder<K: OKemCore> {
+pub struct ClientBuilder<K: OKemCore, D: Digest> {
     pub node_details: Option<IdentityPublicKey<K>>,
     pub statefile_path: Option<String>,
     pub(crate) handshake_timeout: MaybeTimeout,
+
+    pub(crate) _digest: PhantomData<D>,
 }
 
-impl<K: OKemCore> Default for ClientBuilder<K> {
+impl<K: OKemCore, D:Digest> Default for ClientBuilder<K, D> {
     fn default() -> Self {
         Self {
             node_details: None,
             statefile_path: None,
             handshake_timeout: MaybeTimeout::Default_,
+            _digest: PhantomData,
         }
     }
 }
 
-impl<K: OKemCore> ClientBuilder<K> {
+impl<K: OKemCore, D:Digest> ClientBuilder<K, D> {
     pub fn new(pubkey: impl AsRef<[u8]>) -> Result<Self> {
         Ok(Self {
             node_details: Some(IdentityPublicKey::<K>::try_from_bytes(pubkey)?),
             statefile_path: None,
             handshake_timeout: MaybeTimeout::Default_,
+            _digest: PhantomData,
+
         })
     }
 
@@ -58,6 +64,7 @@ impl<K: OKemCore> ClientBuilder<K> {
             node_details: None,
             statefile_path: Some(location.into()),
             handshake_timeout: MaybeTimeout::Default_,
+            _digest: PhantomData,
         })
     }
 
@@ -103,13 +110,14 @@ impl<K: OKemCore> ClientBuilder<K> {
         self
     }
 
-    pub fn build(&self) -> Client<K> {
+    pub fn build(&self) -> Client<K, D> {
         if self.node_details.is_none() {
             panic!("tried to build client from details missing server identity");
         }
         Client {
             station_pubkey: self.node_details.clone().unwrap(),
             handshake_timeout: self.handshake_timeout.duration(),
+            _digest: PhantomData,
         }
     }
 
@@ -119,7 +127,7 @@ impl<K: OKemCore> ClientBuilder<K> {
     }
 }
 
-impl<K: OKemCore> fmt::Display for ClientBuilder<K> {
+impl<K: OKemCore, D:Digest> fmt::Display for ClientBuilder<K, D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         //TODO: string self
         write!(f, "")
@@ -127,12 +135,13 @@ impl<K: OKemCore> fmt::Display for ClientBuilder<K> {
 }
 
 /// Client implementing the obfs4 protocol.
-pub struct Client<K: OKemCore> {
+pub struct Client<K: OKemCore, D: Digest> {
     station_pubkey: IdentityPublicKey<K>,
     handshake_timeout: Option<tokio::time::Duration>,
+    _digest: PhantomData<D>,
 }
 
-impl<K: OKemCore> Client<K> {
+impl<K: OKemCore, D:Digest> Client<K, D> {
     /// TODO: extract args to create new builder
     pub fn get_args(&mut self, _args: &dyn std::any::Any) {}
 
@@ -174,6 +183,7 @@ mod test {
     use super::*;
     use crate::Result;
 
+    use sha3::Sha3_256;
     use kemeleon::MlKem768;
 
     #[test]
@@ -181,7 +191,7 @@ mod test {
         let test_args = [["", "", ""]];
 
         for (i, test_case) in test_args.iter().enumerate() {
-            let cb = ClientBuilder::<MlKem768>::from_params(test_case.to_vec())?;
+            let cb = ClientBuilder::<MlKem768, Sha3_256>::from_params(test_case.to_vec())?;
         }
         Ok(())
     }

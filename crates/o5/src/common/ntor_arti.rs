@@ -218,11 +218,17 @@ pub enum RelayHandshakeError {
     #[error("Handshake from client was seen recently -- potentially replayed.")]
     ReplayedHandshake,
 
-    /// Cyptography error occurred while performing the handshake
+    /// Cryptography error occurred while performing the handshake
     // I think this could happen when someone tries to connect with a valid client, but invalid
-    // indentity key. I am not sure about that though. TODO: add test
+    // identity key. I am not sure about that though. TODO: add test
     #[error("Failed to decapsulate a message despite finding the mark and validating the MAC")]
     FailedDecapsulation,
+
+    /// Cryptography error occurred while performing the server handshake
+    // This should never happen in production, but could happen in dev environments, tests, or custom
+    // implementations.
+    #[error("Failed to encapsulate a shared secret. Likely a bug in the OKEM impl or a bad rng")]
+    FailedEncapsulation,
 
     /// Encountered an Error while attempting to parse a cryptographic value (key / ciphertext)
     // TODO: add test

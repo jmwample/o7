@@ -11,7 +11,7 @@ use crate::{
     proto::{O5Stream, ObfuscatedStream},
     server::Server,
     sessions::{Established, Fault, Initialized, Session},
-    Error, Result,
+    Digest, Error, Result,
 };
 
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
@@ -116,16 +116,17 @@ impl<S: ServerSessionState> ServerSession<S> {
 
 impl ServerSession<Initialized> {
     /// Attempt to complete the handshake with a new client connection.
-    pub async fn handshake<T, K>(
+    pub async fn handshake<T, K, D>(
         self,
-        server: &Server<K>,
+        server: &Server<K, D>,
         mut stream: T,
-        extensions_handler: &mut impl AuxDataReply<Server<K>>,
+        extensions_handler: &mut impl AuxDataReply<Server<K, D>>,
         deadline: Option<Instant>,
     ) -> Result<O5Stream<T, K>>
     where
         T: AsyncRead + AsyncWrite + Unpin,
         K: OKemCore,
+        D: Digest,
     {
         // set up for handshake
         let mut session = self.transition(ServerHandshaking {});
@@ -173,7 +174,7 @@ impl ServerSession<Initialized> {
     }
 }
 
-impl<K: OKemCore> Server<K> {
+impl<K: OKemCore, D: Digest> Server<K, D> {
     /// Complete the handshake with the client. This function assumes that the
     /// client has already sent a message and that we do not know yet if the
     /// message is valid.
