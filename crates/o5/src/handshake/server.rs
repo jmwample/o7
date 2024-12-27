@@ -145,9 +145,36 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         // set up our hash fn
         let mut f1_es = SimpleHmac::<D>::new_from_slice(ephemeral_secret.as_ref())
             .expect("keying hmac should never fail");
+        f1_es.update(&KEY_DERIVE_ARG);
 
-        // Handle extension messages and (optionally) craft a reply.
-        // let reply = reply_fn.reply(&plaintext_msg);
+        // compute the Session Ephemeral Secret
+        let session_ephemeral = f1_es.finalize_reset().into_bytes();
+
+        // compute our Combiner Ephemeral Secret
+        let mut f2 = SimpleHmac::<D>::new_from_slice(session_ephemeral.as_ref())
+            .expect("keying hmac should never fail");
+        f2.update(&shared_secret_2.as_bytes()[..]);
+        let mut combiner_ephemeral = Zeroizing::new([0u8; ENC_KEY_LEN]);
+        combiner_ephemeral.copy_from_slice(&f2.finalize_reset().into_bytes()[..ENC_KEY_LEN]);
+
+        // Handshake context = EKco || CTco || EKso || CTso || protocol_id
+        let mut context = SecretBuf::new();
+        context.write(&client_session_ek.as_bytes()[..])?;
+        context.write(&message.as_ref()[..])?; // TODO: We need less than the whole message
+        context.write(Self::NAME)?;
+
+        // Construct the Session Key
+        let mut f1_fs = SimpleHmac::<D>::new_from_slice(combiner_ephemeral.as_ref())
+            .expect("keying hmac should never fail");
+        f1_fs.update(&context[..]);
+        f1_fs.update(KEY_EXTRACT_ARG);
+        let mut session_key = Zeroizing::new([0u8; ENC_KEY_LEN]);
+        session_key.copy_from_slice(&f1_fs.finalize_reset().into_bytes()[..ENC_KEY_LEN]);
+
+        // Compute the Server message authentication value
+        f1_fs.update(&context[..]);
+        f1_fs.update(KEY_EXTRACT_ARG);
+        let auth = f1_fs.finalize_reset().into_bytes();
 
         // let xb = keypair
         //     .hpke(rng, &client_pk)
@@ -169,13 +196,13 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         //     & ct::bool_to_choice(xy.was_contributory())
         //     & ct::bool_to_choice(xb.was_contributory());
 
-        // let plaintext_msg = decrypt(&enc_key, client_msg);
+        let plaintext_msg = decrypt(&enc_key, client_msg);
 
-        // // It's not exactly constant time to use is_some() and
-        // // unwrap_or_else() here, but that should be somewhat
-        // // hidden by the rest of the computation.
-        // okay &= ct::bool_to_choice(reply.is_some());
-        // let reply = reply.unwrap_or_default();
+        // Handle extension messages and (optionally) craft a reply.
+        let reply = reply_fn.reply(&plaintext_msg);
+
+        okay &= ct::bool_to_choice(reply.is_some());
+        let reply = reply.unwrap_or_default();
 
         // // If we reach this point, we are actually replying, or pretending
         // // that we're going to reply.
@@ -185,7 +212,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         // } else {
         //     Err(RelayHandshakeError::BadClientHandshake)
         // }
-        todo!("server handshake");
+        todo!("construct & send server handshake");
     }
 
     pub(crate) fn complete_server_hs(
@@ -241,7 +268,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             .expect("Keying server f1_es hmac should never fail");
         f1_es.update(&client_ek_obfs);
         f1_es.update(&client_ct_obfs);
-        f1_es.update(MARK_ARG.as_bytes());
+        f1_es.update(CLIENT_MARK_ARG);
         let client_mark = f1_es.finalize_reset().into_bytes();
 
         trace!(
@@ -282,7 +309,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             f1_es.reset();
             f1_es.update(&buf[..pos + MARK_LENGTH]);
             f1_es.update(eh.as_bytes());
-            f1_es.update(CLIENT_MAC_ARG.as_bytes());
+            f1_es.update(CLIENT_MAC_ARG);
             let mac_calculated = &f1_es.finalize_reset().into_bytes()[..MAC_LENGTH];
 
             // check received mac
@@ -337,7 +364,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         ))
 
         // Is it important that the context for the auth HMAC uses the non obfuscated encoding of the
-        // ciphertext sent by the client (ciphertext created using the server's identity encapsulaation
+        // ciphertext sent by the client (ciphertext created using the server's identity encapsulation
         // key) as opposed to the obfuscated encoding?
         //
         // No this should not impact things.
@@ -345,6 +372,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         // -----------------------------------[NTor V3]-------------------------------
         // // TODO: Maybe use the Reader / Ntor interface, it is nice and clean.
         // // Decode the message.
+
         // let mut r = Reader::from_slice(message);
         // let id: Ed25519Identity = r.extract()?;
         // let requested_pk: IdentityPublicKey<K> = r.extract()?;

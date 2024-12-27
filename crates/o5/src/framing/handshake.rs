@@ -315,7 +315,7 @@ where
         // compute the Mark
         f1_es.update(&self.client_session_pubkey.as_bytes()[..]);
         f1_es.update(&ciphertext.as_bytes()[..]);
-        f1_es.update(MARK_ARG.as_bytes());
+        f1_es.update(CLIENT_MARK_ARG);
         let mark = f1_es.finalize_reset().into_bytes();
 
         // Encrypt the message (Extensions etc.)
@@ -343,7 +343,7 @@ where
         f1_es.update(&params);
         self.epoch_hour = format!("{}", get_epoch_hour());
         f1_es.update(self.epoch_hour.as_bytes());
-        f1_es.update(CLIENT_MAC_ARG.as_bytes());
+        f1_es.update(CLIENT_MAC_ARG);
         let mac = f1_es.finalize_reset().into_bytes();
         buf.put(&mac[..]);
 

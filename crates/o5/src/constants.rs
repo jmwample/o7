@@ -1,4 +1,5 @@
 #![allow(unused)] // TODO: Remove this. nothing unused should stay
+// #![deny(missing_docs)]
 
 use kemeleon::{Encode, EncodingSize, KemeleonByteArraySize, OKemCore};
 use ml_kem::{Ciphertext, MlKem768Params};
@@ -61,24 +62,29 @@ pub const SEED_MESSAGE_LENGTH: usize =
 
 pub const CONSUME_READ_SIZE: usize = framing::MAX_SEGMENT_LENGTH * 16;
 
+pub const NODE_ID_LENGTH: usize = ED25519_ID_LEN;
+pub const SEED_LENGTH: usize = drbg::SEED_LENGTH;
+pub const HEADER_LENGTH: usize = framing::FRAME_OVERHEAD + framing::MESSAGE_OVERHEAD;
+
 //===============================[Transport]===================================//
 
-pub const TRANSPORT_NAME: &str = "o5";
+pub const CLIENT_MARK_ARG: &[u8] = b":05-mc";
+pub const SERVER_MARK_ARG: &[u8] = b":05-ms";
+pub const CLIENT_MAC_ARG:  &[u8] = b":05-mac_c";
+pub const SERVER_MAC_ARG:  &[u8] = b":o5-mac_s";
+pub const SERVER_AUTH_ARG: &[u8] = b":o5-sever_mac";
+pub const KEY_EXTRACT_ARG: &[u8] = b":o5-key_extract";
+pub const KEY_DERIVE_ARG:  &[u8] = b":o5-derive_key";
 
-pub const MARK_ARG: &str = ":05-mc";
-pub const CLIENT_MAC_ARG: &str = ":05-mac_c";
-pub const SERVER_MAC_ARG: &str = ":o5-mac_s";
-pub const SERVER_AUTH_ARG: &str = ":o5-sever_mac";
-pub const KEY_EXTRACT_ARG: &str = ":o5-key_extract";
+// argument / parameter names
+pub const NODE_ID_ARG:     &[u8] = b"node-id";
+pub const PUBLIC_KEY_ARG:  &[u8] = b"public-key";
+pub const PRIVATE_KEY_ARG: &[u8] = b"private-key";
+pub const SEED_ARG:        &[u8] = b"drbg-seed";
+pub const CERT_ARG:        &[u8] = b"cert";
+pub const BIAS_CMD_ARG:    &[u8] = b"o5-distBias";
 
-pub const NODE_ID_ARG: &str = "node-id";
-pub const PUBLIC_KEY_ARG: &str = "public-key";
-pub const PRIVATE_KEY_ARG: &str = "private-key";
-pub const SEED_ARG: &str = "drbg-seed";
-pub const CERT_ARG: &str = "cert";
-
-pub const BIAS_CMD_ARG: &str = "o5-distBias";
-
+// default timeouts
 pub const REPLAY_TTL: Duration = Duration::from_secs(60);
 #[cfg(test)]
 pub const CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -90,10 +96,7 @@ pub const CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 pub const SERVER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub const MAX_IPT_DELAY: usize = 100;
+
+// failed handshake close conditions
 pub const MAX_CLOSE_DELAY: usize = 60;
 pub const MAX_CLOSE_DELAY_BYTES: usize = MAX_HANDSHAKE_LENGTH;
-
-pub const SEED_LENGTH: usize = drbg::SEED_LENGTH;
-pub const HEADER_LENGTH: usize = framing::FRAME_OVERHEAD + framing::MESSAGE_OVERHEAD;
-
-pub const NODE_ID_LENGTH: usize = ED25519_ID_LEN;

@@ -11,6 +11,7 @@ pub use client::{Client, ClientBuilder};
 use digest::FixedOutputReset;
 pub use server::{Server, ServerBuilder};
 
+#[rustfmt::skip]
 pub(crate) mod constants;
 pub(crate) mod handshake;
 pub(crate) mod sessions;
