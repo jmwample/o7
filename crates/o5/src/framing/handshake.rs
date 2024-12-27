@@ -6,7 +6,7 @@ use crate::{
     constants::*,
     handshake::{
         decrypt, encrypt, Authcode, CHSMaterials, EphemeralKey, EphemeralPub, SessionSharedSecret,
-        AUTHCODE_LENGTH, ENC_KEY_LEN,
+        ENC_KEY_LEN,
     },
     Digest, Error, Result,
 };
@@ -32,32 +32,54 @@ use typenum::{
 use zeroize::{Zeroize, Zeroizing};
 
 use core::borrow::Borrow;
+use core::marker::PhantomData;
 
 // -----------------------------[ Server ]-----------------------------
 
+/// Trait allowing for interchangeable server handshake state based on context
+pub trait ShsState {}
+
 /// Used by the client when parsing the handshake sent by the server.
-pub struct ServerHandshakeMessage<K: OKemCore> {
-    server_auth: [u8; AUTHCODE_LENGTH],
-    pad_len: usize,
-    session_pubkey: EphemeralPub<K>,
-    epoch_hour: String,
+pub struct ServerHandshakeMessage<D: Digest, S: ShsState> {
+    server_auth: Authcode,
     aux_data: Vec<NtorV3Extension>,
-    client_hadshake_msg: ClientHandshakeMessage<K, ClientStateIncoming>,
+    state: S,
+    _digest: PhantomData<D>,
 }
 
-impl<K: OKemCore> ServerHandshakeMessage<K> {
+/// State tracked when constructing and sending an outgoing server handshake
+pub struct ServerStateOutgoing {
+    pad_len: usize,
+    epoch_hour: String,
+    // client_handshake_msg: ClientHandshakeMessage<K, ClientStateIncoming>,
+}
+impl ShsState for ServerStateOutgoing {}
+
+/// State tracked when parsing and operating on an incoming server handshake
+pub struct ServerStateIncoming {}
+impl ShsState for ServerStateIncoming {}
+
+impl<D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing> {
+    pub fn new(server_auth: Authcode) -> Self {
+        Self {
+            server_auth,
+            aux_data: vec![],
+            state: ServerStateOutgoing {
+                epoch_hour: get_epoch_hour().to_string(),
+                pad_len: 0,
+            },
+            _digest: PhantomData::<D>,
+        }
+    }
+
     pub fn with_pad_len(&mut self, pad_len: usize) -> &Self {
-        self.pad_len = pad_len;
+        self.state.pad_len = pad_len;
         self
     }
 
     pub fn with_aux_data(&mut self, aux_data: Vec<NtorV3Extension>) -> &Self {
         self.aux_data = aux_data;
         self
-    }
-
-    pub fn server_pubkey(&mut self) -> EphemeralPub<K> {
-        self.session_pubkey.clone()
     }
 
     pub fn server_auth(self) -> Authcode {
@@ -282,7 +304,7 @@ where
         buf: &mut impl BufMut,
     ) -> EncodeResult<Zeroizing<[u8; ENC_KEY_LEN]>> {
         trace!("serializing client handshake");
-        self.marshall_inner::<Sha3_256>(rng, buf)
+        self.marshall_inner::<Sha3_256>(rng, buf) // TODO
     }
 
     fn marshall_inner<D: Digest>(

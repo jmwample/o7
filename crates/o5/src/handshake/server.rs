@@ -88,7 +88,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
     /// `reply_fn` to handle incoming client secret message and decide how
     /// to reply.  The client's handshake is in `message`.  Our private
     /// key(s) are in `keys`.  The `verification` string must match the
-    /// string provided by the client.
+    /// string provided by th
     ///
     /// On success, return the server handshake message to send, and an XofReader
     /// to use in generating circuit keys.
@@ -176,33 +176,21 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         f1_fs.update(KEY_EXTRACT_ARG);
         let auth = f1_fs.finalize_reset().into_bytes();
 
-        // let xb = keypair
-        //     .hpke(rng, &client_pk)
-        //     .map_err(|e| Error::Crypto(e.into()))?;
-
-        // let (enc_key, mut mac) = kdf_msgkdf(&xb, &keypair.pk, &client_pk, verification)
-        //     .map_err(into_internal!("Can't apply ntor3 kdf."))?;
-
-        // // Verify the message we received.
+        // // ntor_v3 - Verify the message we received.
+        // // example of maybe cleaner way to use HMACs
         // let computed_mac: DigestVal = {
         //     mac.write(client_msg)
         //         .map_err(into_internal!("Can't compute MAC input."))?;
         //     mac.take().finalize().into()
         // };
-        // let y_pk = SessionPublicKey::from(secret_key_y);
-        // let xy = secret_key_y.hpke(rng, &client_pk)?;
 
-        // let mut okay = computed_mac.ct_eq(&msg_mac)
-        //     & ct::bool_to_choice(xy.was_contributory())
-        //     & ct::bool_to_choice(xb.was_contributory());
+        // let plaintext_msg = decrypt(&enc_key, client_msg);
 
-        let plaintext_msg = decrypt(&enc_key, client_msg);
+        // // Handle extension messages and (optionally) craft a reply.
+        // let reply = reply_fn.reply(&plaintext_msg);
 
-        // Handle extension messages and (optionally) craft a reply.
-        let reply = reply_fn.reply(&plaintext_msg);
-
-        okay &= ct::bool_to_choice(reply.is_some());
-        let reply = reply.unwrap_or_default();
+        // okay &= ct::bool_to_choice(reply.is_some());
+        // let reply = reply.unwrap_or_default();
 
         // // If we reach this point, we are actually replying, or pretending
         // // that we're going to reply.
@@ -219,7 +207,6 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         &self,
         client_hs: &ClientHandshakeMessage<K, ClientStateIncoming>,
         materials: &HandshakeMaterials,
-        keygen: &mut NtorV3KeyGenerator,
         authcode: Authcode,
     ) -> RelayHandshakeResult<Vec<u8>> {
         todo!("waiting on parse")
@@ -319,6 +306,12 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
                 hex::encode(mac_calculated),
                 hex::encode(mac_received)
             );
+
+            // // make sure that the clients mac matches and that both x25519 keys contributed (i.e. neither was 0)
+            // let mut okay = computed_mac.ct_eq(&msg_mac)
+            //     & ct::bool_to_choice(xy.was_contributory())
+            //     & ct::bool_to_choice(xb.was_contributory());
+
             if mac_calculated.ct_eq(mac_received).into() {
                 trace!("correct mac");
                 // Ensure that this handshake has not been seen previously.

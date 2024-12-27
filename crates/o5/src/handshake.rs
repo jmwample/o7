@@ -47,9 +47,6 @@ pub(crate) use client::{
 mod server;
 pub(crate) use server::HandshakeMaterials as SHSMaterials;
 
-/// The verification string to be used for circuit extension.
-pub const NTOR3_CIRC_VERIFICATION: &[u8] = b"circuit extend";
-
 /// The size of an encryption key in bytes.
 pub const ENC_KEY_LEN: usize = 32;
 /// The size of a MAC key in bytes.
