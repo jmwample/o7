@@ -1,8 +1,9 @@
 use crate::{
-    constants::*, handshake::IdentityPublicKey, proto::O5Stream, Digest, Error, TRANSPORT_NAME,
+    constants::*, handshake::IdentityPublicKey, proto::O5Stream, transport_name, Digest, Error,
 };
 
 use std::{
+    concat,
     marker::PhantomData,
     net::{SocketAddrV4, SocketAddrV6},
     pin::Pin,
@@ -13,6 +14,7 @@ use std::{
 use hex::FromHex;
 use kemeleon::{Encode, MlKem768, OKemCore};
 use ptrs::{args::Args, trace, FutureResult as F};
+use sha3::Sha3_256;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
@@ -26,8 +28,9 @@ pub struct Transport<T, K, D> {
     _k: PhantomData<K>,
     _d: PhantomData<D>,
 }
-impl<T, K, D> Transport<T, K, D> {
-    pub const NAME: &'static str = TRANSPORT_NAME;
+
+impl O5PT {
+    pub const NAME: &'static str = concat!(transport_name!(), "_ml-kem768", "_sha3-256");
 }
 
 impl<T, K, D> ptrs::PluggableTransport<T> for Transport<T, K, D>
@@ -124,7 +127,7 @@ where
 
     fn method_name() -> String {
         TRANSPORT_NAME.into()
-}
+    }
 
     /// Builds a new PtCommonParameters.
     ///
@@ -261,20 +264,25 @@ mod test {
         let pt_name = <O5PT as ptrs::PluggableTransport<TcpStream>>::name();
         assert_eq!(pt_name, O5PT::NAME);
 
-        let cb_name =
-            <crate::ClientBuilder<MlKem768, Sha3_256> as ptrs::ClientBuilder<TcpStream>>::method_name();
-        assert_eq!(cb_name, O5PT::NAME);
-
-        let sb_name = <crate::ServerBuilder<TcpStream, MlKem768, Sha3_256> as ptrs::ServerBuilder<
+        let cb_name = <crate::ClientBuilder<MlKem768, Sha3_256> as ptrs::ClientBuilder<
             TcpStream,
         >>::method_name();
+        assert_eq!(cb_name, O5PT::NAME);
+
+        let sb_name =
+            <crate::ServerBuilder<TcpStream, MlKem768, Sha3_256> as ptrs::ServerBuilder<
+                TcpStream,
+            >>::method_name();
         assert_eq!(sb_name, O5PT::NAME);
 
-        let ct_name =
-            <crate::Client<MlKem768, Sha3_256> as ptrs::ClientTransport<TcpStream, crate::Error>>::method_name();
+        let ct_name = <crate::Client<MlKem768, Sha3_256> as ptrs::ClientTransport<
+            TcpStream,
+            crate::Error,
+        >>::method_name();
         assert_eq!(ct_name, O5PT::NAME);
 
-        let st_name = <crate::Server<MlKem768, Sha3_256> as ptrs::ServerTransport<TcpStream>>::method_name();
+        let st_name =
+            <crate::Server<MlKem768, Sha3_256> as ptrs::ServerTransport<TcpStream>>::method_name();
         assert_eq!(st_name, O5PT::NAME);
     }
 }

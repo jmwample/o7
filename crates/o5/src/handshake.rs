@@ -415,7 +415,7 @@ mod test {
         let mut rng = rand::thread_rng();
         let b = hex::decode(KEYS[0].b).expect("failed to unhex b");
         let id = <[u8; NODE_ID_LENGTH]>::from_hex(KEYS[0].id).unwrap();
-            let x = hex::decode(KEYS[0].x).expect("failed to unhex x");
+        let x = hex::decode(KEYS[0].x).expect("failed to unhex x");
         let y = hex::decode(KEYS[0].y).expect("failed to unhex y");
         let b = Decap::<K>::try_from_bytes(&b[..]).expect("failed to parse b");
         let B = b.encapsulation_key(); // K::EncapsulationKey::from(&b);

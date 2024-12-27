@@ -24,7 +24,14 @@ pub use pt::{Transport, O5PT};
 mod error;
 pub use error::{Error, Result};
 
-pub const TRANSPORT_NAME: &str = "o5";
+macro_rules! transport_name {
+    () => {
+        "o5"
+    };
+}
+pub(crate) use transport_name;
+
+pub const TRANSPORT_NAME: &str = transport_name!();
 
 #[cfg(test)]
 pub(crate) mod test_utils;
@@ -42,9 +49,15 @@ pub mod dev {
     pub const SERVER_ARGS: &str = "drbg-seed=0a0b0c0d0e0f0a0b0c0d0e0f0a0b0c0d0e0f0a0b0c0d0e0f;node-id=0000000000000000000000000000000000000000;private-key=3031323334353637383961626364656666656463626139383736353433323130";
 }
 
-pub trait Digest: digest::Digest + digest::core_api::BlockSizeUser + digest::FixedOutputReset + Clone {}
+pub trait Digest:
+    digest::Digest + digest::core_api::BlockSizeUser + digest::FixedOutputReset + Clone
+{
+}
 
-impl<D: digest::Digest + digest::core_api::BlockSizeUser + digest::FixedOutputReset + Clone> Digest for D {}
+impl<D: digest::Digest + digest::core_api::BlockSizeUser + digest::FixedOutputReset + Clone> Digest
+    for D
+{
+}
 
 /*
 #[cfg(test)]

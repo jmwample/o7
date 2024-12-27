@@ -15,7 +15,7 @@ use block_buffer::Eager;
 use bytes::{BufMut, BytesMut};
 use digest::{
     core_api::{BlockSizeUser, BufferKindUser, CoreProxy, FixedOutputCore, UpdateCore},
-    HashMarker, Digest as _,
+    Digest as _, HashMarker,
 };
 use hmac::{Mac, SimpleHmac};
 use kem::{Decapsulate, Encapsulate};
@@ -302,8 +302,8 @@ where
         let (ciphertext, shared_secret) = node_encap_key.encapsulate(rng).map_err(to_tor_err)?;
 
         // compute our ephemeral secret
-        let mut f2 =
-            SimpleHmac::<D>::new_from_slice(node_id.as_bytes()).expect("keying hmac should never fail");
+        let mut f2 = SimpleHmac::<D>::new_from_slice(node_id.as_bytes())
+            .expect("keying hmac should never fail");
         f2.update(&shared_secret.as_bytes()[..]);
         let mut ephemeral_secret = Zeroizing::new([0u8; ENC_KEY_LEN]);
         ephemeral_secret.copy_from_slice(&f2.finalize_reset().into_bytes()[..ENC_KEY_LEN]);

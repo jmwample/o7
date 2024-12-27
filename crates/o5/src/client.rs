@@ -21,9 +21,9 @@ use tokio::time::{Duration, Instant};
 use std::{
     fmt,
     io::{Error as IoError, ErrorKind as IoErrorKind},
+    marker::PhantomData,
     pin::Pin,
     sync::{Arc, Mutex},
-    marker::PhantomData,
 };
 
 #[derive(Clone, Debug)]
@@ -35,7 +35,7 @@ pub struct ClientBuilder<K: OKemCore, D: Digest> {
     pub(crate) _digest: PhantomData<D>,
 }
 
-impl<K: OKemCore, D:Digest> Default for ClientBuilder<K, D> {
+impl<K: OKemCore, D: Digest> Default for ClientBuilder<K, D> {
     fn default() -> Self {
         Self {
             node_details: None,
@@ -46,14 +46,13 @@ impl<K: OKemCore, D:Digest> Default for ClientBuilder<K, D> {
     }
 }
 
-impl<K: OKemCore, D:Digest> ClientBuilder<K, D> {
+impl<K: OKemCore, D: Digest> ClientBuilder<K, D> {
     pub fn new(pubkey: impl AsRef<[u8]>) -> Result<Self> {
         Ok(Self {
             node_details: Some(IdentityPublicKey::<K>::try_from_bytes(pubkey)?),
             statefile_path: None,
             handshake_timeout: MaybeTimeout::Default_,
             _digest: PhantomData,
-
         })
     }
 
@@ -127,7 +126,7 @@ impl<K: OKemCore, D:Digest> ClientBuilder<K, D> {
     }
 }
 
-impl<K: OKemCore, D:Digest> fmt::Display for ClientBuilder<K, D> {
+impl<K: OKemCore, D: Digest> fmt::Display for ClientBuilder<K, D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         //TODO: string self
         write!(f, "")
@@ -141,7 +140,7 @@ pub struct Client<K: OKemCore, D: Digest> {
     _digest: PhantomData<D>,
 }
 
-impl<K: OKemCore, D:Digest> Client<K, D> {
+impl<K: OKemCore, D: Digest> Client<K, D> {
     /// TODO: extract args to create new builder
     pub fn get_args(&mut self, _args: &dyn std::any::Any) {}
 
@@ -183,8 +182,8 @@ mod test {
     use super::*;
     use crate::Result;
 
-    use sha3::Sha3_256;
     use kemeleon::MlKem768;
+    use sha3::Sha3_256;
 
     #[test]
     fn parse_params() -> Result<()> {

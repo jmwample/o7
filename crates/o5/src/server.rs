@@ -9,9 +9,9 @@ use crate::{
     },
     constants::*,
     framing::{FrameError, Marshall, O5Codec, TryParse, KEY_LENGTH},
-    proto::{MaybeTimeout, O5Stream},
-    sessions::{Session, ServerSession, Initialized},
     handshake::{IdentityPublicKey, IdentitySecretKey},
+    proto::{MaybeTimeout, O5Stream},
+    sessions::{Initialized, ServerSession, Session},
     Digest, Error, Result,
 };
 
@@ -23,7 +23,7 @@ use bytes::{Buf, BufMut, Bytes};
 use hex::FromHex;
 use hmac::{Hmac, Mac};
 use kemeleon::OKemCore;
-use ptrs::{debug, info, args::Args};
+use ptrs::{args::Args, debug, info};
 use rand::prelude::*;
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -96,7 +96,7 @@ impl<T, K: OKemCore, D: Digest> ServerBuilder<T, K, D> {
     }
 
     pub fn build(self) -> Server<K, D> {
-        Server::<K,D>(Arc::new(ServerCore::<K, D> {
+        Server::<K, D>(Arc::new(ServerCore::<K, D> {
             identity_keys: self.identity_keys,
             biased: false,
             handshake_timeout: self.handshake_timeout.duration(),
@@ -296,9 +296,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         }
     }
 
-    pub(crate) fn new_server_session(
-        &self,
-    ) -> Result<ServerSession<Initialized>> {
+    pub(crate) fn new_server_session(&self) -> Result<ServerSession<Initialized>> {
         let mut session_id = [0u8; SESSION_ID_LEN];
         rand::thread_rng().fill_bytes(&mut session_id);
         Ok(ServerSession {

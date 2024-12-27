@@ -100,13 +100,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         materials: &HandshakeMaterials,
         verification: &[u8],
     ) -> RelayHandshakeResult<(Vec<u8>, NtorV3XofReader)> {
-        self.server_handshake_ntor_v3_no_keygen(
-            rng,
-            reply_fn,
-            message,
-            materials,
-            verification,
-        )
+        self.server_handshake_ntor_v3_no_keygen(rng, reply_fn, message, materials, verification)
     }
 
     /// As `server_handshake_ntor_v3`, but take a secret key instead of an RNG.
@@ -144,7 +138,9 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         let client_session_ek = client_hs.get_public();
         let ephemeral_secret = client_hs.get_ephemeral_secret();
 
-        let (ciphertext, shared_secret_2) = client_session_ek.encapsulate(rng).map_err(|_| RelayHandshakeError::FailedEncapsulation)?;
+        let (ciphertext, shared_secret_2) = client_session_ek
+            .encapsulate(rng)
+            .map_err(|_| RelayHandshakeError::FailedEncapsulation)?;
 
         // set up our hash fn
         let mut f1_es = SimpleHmac::<D>::new_from_slice(ephemeral_secret.as_ref())
@@ -174,7 +170,6 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         //     & ct::bool_to_choice(xb.was_contributory());
 
         // let plaintext_msg = decrypt(&enc_key, client_msg);
-
 
         // // It's not exactly constant time to use is_some() and
         // // unwrap_or_else() here, but that should be somewhat
@@ -316,7 +311,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
                 // We break here, but if this creates some kind of timing channel
                 // (not sure exactly what that would be) we could reduce timing variance by
                 // just evaluating all three MACs. Probably not necessary
-                break
+                break;
             }
         }
 
