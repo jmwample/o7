@@ -141,10 +141,8 @@ impl<K: OKemCore> ClientHandshake for NtorV3Client<K> {
     fn client1(hs_materials: Self::HandshakeMaterials) -> Result<(Self::StateType, Vec<u8>)> {
         let mut rng = rand::thread_rng();
 
-        Ok(
-            client_handshake_ntor_v3::<K>(&mut rng, hs_materials, NTOR3_CIRC_VERIFICATION)
-                .map_err(into_internal!("Can't encode ntor3 client handshake."))?,
-        )
+        Ok(client_handshake_ntor_v3::<K>(&mut rng, hs_materials)
+            .map_err(into_internal!("Can't encode ntor3 client handshake."))?)
     }
 
     /// Handle an onionskin from a relay, and produce a key generator.
@@ -152,8 +150,7 @@ impl<K: OKemCore> ClientHandshake for NtorV3Client<K> {
     /// The state object must match the one that was used to make the
     /// client onionskin that the server is replying to.
     fn client2<T: AsRef<[u8]>>(state: &mut Self::StateType, msg: T) -> Result<Self::HsOutput> {
-        let (message, xof_reader) =
-            client_handshake_ntor_v3_part2::<K>(state, msg.as_ref(), NTOR3_CIRC_VERIFICATION)?;
+        let (message, xof_reader) = client_handshake_ntor_v3_part2::<K>(state, msg.as_ref())?;
         let extensions = NtorV3Extension::decode(&message).map_err(|err| Error::CellDecodeErr {
             object: "ntor v3 extensions",
             err,
@@ -169,16 +166,14 @@ impl<K: OKemCore> ClientHandshake for NtorV3Client<K> {
 
 /// Client-side Ntor version 3 handshake, part one.
 ///
-/// Given a secure `rng`, a relay's public key, a secret message to send,
-/// and a shared verification string, generate a new handshake state
-/// and a message to send to the relay.
+/// Given a secure `rng`, a relay's public key, a secret message to send, generate a new handshake
+/// state and a message to send to the relay.
 pub(crate) fn client_handshake_ntor_v3<K: OKemCore>(
     rng: &mut impl CryptoRngCore,
     materials: HandshakeMaterials<K>,
-    verification: &[u8],
 ) -> EncodeResult<(HandshakeState<K>, Vec<u8>)> {
     let keys = K::generate(rng);
-    client_handshake_ntor_v3_no_keygen::<K>(rng, keys, materials, verification)
+    client_handshake_ntor_v3_no_keygen::<K>(rng, keys, materials)
 }
 
 /// As `client_handshake_ntor_v3`, but don't generate an ephemeral DH
@@ -189,7 +184,6 @@ pub(crate) fn client_handshake_ntor_v3_no_keygen<K: OKemCore>(
     rng: &mut impl CryptoRngCore,
     keys: (K::DecapsulationKey, K::EncapsulationKey),
     materials: HandshakeMaterials<K>,
-    verification: &[u8],
 ) -> EncodeResult<(HandshakeState<K>, Vec<u8>)> {
     let ephemeral_ek = EphemeralPub::new(keys.1);
     let hs_materials = ClientStateOutgoing {
@@ -223,7 +217,6 @@ pub(crate) fn client_handshake_ntor_v3_no_keygen<K: OKemCore>(
 pub(crate) fn client_handshake_ntor_v3_part2<K: OKemCore>(
     state: &HandshakeState<K>,
     relay_handshake: &[u8],
-    verification: &[u8],
 ) -> Result<(Vec<u8>, NtorV3XofReader)> {
     todo!("client handshake part 2");
 

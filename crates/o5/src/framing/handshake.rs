@@ -4,9 +4,10 @@ use crate::{
         HmacSha256,
     },
     constants::*,
+    framing::FrameError,
     handshake::{
-        decrypt, encrypt, Authcode, CHSMaterials, EphemeralKey, EphemeralPub, SessionSharedSecret,
-        ENC_KEY_LEN,
+        decrypt, encrypt, Authcode, CHSMaterials, EphemeralKey, EphemeralPub, SHSMaterials,
+        SessionSharedSecret, ENC_KEY_LEN,
     },
     Digest, Error, Result,
 };
@@ -24,7 +25,7 @@ use ptrs::trace;
 use rand::Rng;
 use rand_core::CryptoRngCore;
 use sha3::Sha3_256;
-use tor_bytes::{EncodeError, EncodeResult};
+use tor_bytes::{EncodeError, EncodeResult, Writer};
 use tor_cell::relaycell::extend::NtorV3Extension;
 use typenum::{
     consts::U256, marker_traits::NonZero, operator_aliases::Le, type_operators::IsLess, Unsigned,
@@ -48,60 +49,26 @@ pub struct ServerHandshakeMessage<D: Digest, S: ShsState> {
 }
 
 /// State tracked when constructing and sending an outgoing server handshake
-pub struct ServerStateOutgoing {
+pub struct ServerStateOutgoing<'a> {
     pad_len: usize,
     epoch_hour: String,
-    // client_handshake_msg: ClientHandshakeMessage<K, ClientStateIncoming>,
+    ephemeral_secret: Zeroizing<[u8; 32]>,
+    hs_materials: SHSMaterials,
+    encrypted_extension_reply: &'a [u8],
 }
-impl ShsState for ServerStateOutgoing {}
+impl<'a> ShsState for ServerStateOutgoing<'a> {}
 
 /// State tracked when parsing and operating on an incoming server handshake
 pub struct ServerStateIncoming {}
 impl ShsState for ServerStateIncoming {}
 
-impl<D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing> {
-    pub fn new(server_auth: Authcode) -> Self {
-        Self {
-            server_auth,
-            aux_data: vec![],
-            state: ServerStateOutgoing {
-                epoch_hour: get_epoch_hour().to_string(),
-                pad_len: 0,
-            },
-            _digest: PhantomData::<D>,
-        }
-    }
-
-    pub fn with_pad_len(&mut self, pad_len: usize) -> &Self {
-        self.state.pad_len = pad_len;
-        self
-    }
-
-    pub fn with_aux_data(&mut self, aux_data: Vec<NtorV3Extension>) -> &Self {
-        self.aux_data = aux_data;
-        self
-    }
-
-    pub fn server_auth(self) -> Authcode {
-        self.server_auth
-    }
-
+impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a>> {
     /// Serialize the Server Hello Message
     ///
-    /// Process the dlient handshake to capture required secrets and auth context.
-    /// The Server handshake is then constructed as:
-    ///
-    ///    shared_secret_1 = Decapsulate(DK_id, ct)
-    ///
-    ///    CTs, shared_secret_2 = Encapsulate(EKc)
-    ///
-    ///    ES = F2(NodeID, shared_secret_1)
-    ///    ES' = F1(ES, ":derive_key")
-    ///    FS = F2(ES', shared_secret_2)
-    ///    SESSION_KEY = F1(FS, EKs | CTc | EKc | CTs | PROTOID | ":key_extract")
+    /// Given a properly processed client handshake, the Server handshake is then constructed as:
     ///
     ///    MSG = Enc_chacha20poly1305(ES, [extensions])
-    ///    auth = F1(FS, EKs | CTc | EKc | CTs | PROTOID | ":server_mac")
+    ///    AUTH = F1(FS, context | PROTOID | ":server_mac")
     ///    Ms = F1(ES, CTso | ":ms")
     ///    MACs = F1(ES, CTso | auth | MSG | Ps | Ms | E | ":mac_s" )
     ///    OUT = CTso | auth | MSG | Ps | Ms | MACs
@@ -114,32 +81,68 @@ impl<D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing> {
     ///     CTso  ciphertext created by the server using the client session key, obfuscated
     ///     Ps    N ∈ [serverMinPadLength,serverMaxPadLength] bytes of random padding.
     ///     E     string representation of the number of hours since the UNIX epoch
-    pub fn marshall(&mut self, _buf: &mut impl BufMut) -> Result<()> {
+    pub fn marshall(
+        &mut self,
+        rng: &mut impl CryptoRngCore,
+        buf: &mut impl BufMut,
+        ciphertext: impl AsRef<[u8]>,
+        outgoing: &ServerStateOutgoing<'a>,
+    ) -> Result<()> {
+        // -------------------------------- [ ST-PQ-OBFS ] -------------------------------- //
+        // Security Theoretic, KEM, Obfuscated Key exchange
+
         trace!("serializing server handshake");
 
-        // -------------------------------- [ ST-PQ-OBFS ] -------------------------------- //
-        // Security Theoretic, Post-Quantum safe, Obfuscated Key exchange
+        let ephemeral_secret = &outgoing.ephemeral_secret;
 
-        // let (ciphertext, shared_secret) = node_encap_key.encapsulate(rng).map_err(to_tor_err)?;
+        // set up our hash fn
+        let mut f1_es = SimpleHmac::<D>::new_from_slice(ephemeral_secret.as_ref())
+            .expect("keying hmac should never fail");
 
-        // h.update(self.session_pubkey.as_bytes().as_ref());
-        // let mark: &[u8] = &h.finalize_reset().into_bytes()[..MARK_LENGTH];
+        // compute the Mark
+        let mark = {
+            f1_es.reset();
+            f1_es.update(ciphertext.as_ref());
+            f1_es.update(SERVER_MARK_ARG);
+            f1_es.finalize_reset().into_bytes()
+        };
 
-        // // Generate the padding
-        // let pad: &[u8] = &make_pad(rng, self.pad_len)?;
+        // Generate the padding
+        let pad = make_pad(rng, self.state.pad_len);
 
-        // // Write Y, AUTH, P_S, M_S.
-        // let mut params = vec![];
-        // params.extend_from_slice(self.session_pubkey.as_bytes());
-        // params.extend_from_slice(&self.server_auth);
-        // params.extend_from_slice(pad);
-        // params.extend_from_slice(mark);
-        // buf.put(params.as_slice());
+        // Write CTso, AUTH, MSG_REPLY, P_s, M_s
+        let hello_msg = {
+            let mut hello_msg = Vec::new();
+            hello_msg
+                .write(ciphertext.as_ref())
+                .and_then(|_| hello_msg.write(&self.server_auth))
+                .and_then(|_| hello_msg.write(&self.state.encrypted_extension_reply))
+                .and_then(|_| hello_msg.write(&pad))
+                .and_then(|_| hello_msg.write(&mark))
+                .map_err(|_| {
+                    FrameError::FailedToMarshall("failed to encode server handshake".into())
+                })?;
+            hello_msg
+        };
+        buf.put(hello_msg.as_slice());
 
-        // // Calculate and write MAC
-        // h.update(&params);
-        // h.update(self.epoch_hour.as_bytes());
-        // buf.put(&h.finalize_reset().into_bytes()[..MAC_LENGTH]);
+        // Calculate and write MAC
+        let mac = {
+            f1_es.reset();
+            f1_es.update(&hello_msg);
+            self.state.epoch_hour = format!("{}", get_epoch_hour());
+            f1_es.update(self.state.epoch_hour.as_bytes());
+            f1_es.update(SERVER_MAC_ARG);
+            f1_es.finalize_reset().into_bytes()
+        };
+        buf.put(&mac[..]);
+
+        trace!(
+            "{} - mark: {}, mac: {}",
+            self.state.hs_materials.session_id,
+            hex::encode(mark),
+            hex::encode(mac)
+        );
 
         // //------------------------------------[NTORv3]-------------------------------
 
@@ -186,15 +189,6 @@ impl<D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing> {
         //     auth.take().finalize().into()
         // };
 
-        // let reply = {
-        //     let mut reply = Vec::new();
-        //     reply
-        //         .write(&y_pk.as_bytes())
-        //         .and_then(|_| reply.write(&auth))
-        //         .and_then(|_| reply.write(&encrypted_reply))
-        //         .map_err(into_internal!("can't encode ntor3 reply."))?;
-        //     reply
-        // };
         Ok(())
     }
 }
@@ -259,7 +253,6 @@ where
     K: OKemCore,
 {
     pub fn get_public(&mut self) -> EphemeralPub<K> {
-        // trace!("repr: {}", hex::encode(self.client_session_pubkey.id);
         self.client_session_pubkey.clone()
     }
 
@@ -353,16 +346,19 @@ where
         let pad = make_pad(rng, pad_len);
 
         // Write EKco, CTco, MSG, P_C, M_C
-        let mut params = vec![];
-        params.extend_from_slice(&self.client_session_pubkey.as_bytes()[..]);
-        params.extend_from_slice(&ciphertext.as_bytes()[..]);
-        params.extend_from_slice(&message);
-        params.extend_from_slice(&pad);
-        params.extend_from_slice(&mark);
-        buf.put(params.as_slice());
+        let hello_msg = {
+            let mut hello_msg = Vec::new();
+            hello_msg.write(&self.client_session_pubkey.as_bytes()[..]);
+            hello_msg.write(&ciphertext.as_bytes()[..]);
+            hello_msg.write(&encrypted_msg);
+            hello_msg.write(&pad);
+            hello_msg.write(&mark);
+            hello_msg
+        };
+        buf.put(hello_msg.as_slice());
 
         // Calculate and write MAC
-        f1_es.update(&params);
+        f1_es.update(&hello_msg);
         self.epoch_hour = format!("{}", get_epoch_hour());
         f1_es.update(self.epoch_hour.as_bytes());
         f1_es.update(CLIENT_MAC_ARG);

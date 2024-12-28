@@ -295,13 +295,11 @@ mod test {
         let mut rng = rand::thread_rng();
         let relay_private = IdentitySecretKey::random_from_rng(&mut testing_rng());
 
-        let verification = &b"shared secret"[..];
         let client_message = &b"Hello. I am a client. Let's be friends!"[..];
         let relay_message = &b"Greetings, client. I am a robot. Beep boop."[..];
         let materials = CHSMaterials::new(&relay_private.pk, "fake_session_id-1".into());
 
-        let (c_state, c_handshake) =
-            client::client_handshake_ntor_v3(&mut rng, materials, verification).unwrap();
+        let (c_state, c_handshake) = client::client_handshake_ntor_v3(&mut rng, materials).unwrap();
 
         struct Rep(Vec<u8>, Vec<u8>);
         impl MsgReply for Rep {
@@ -315,21 +313,11 @@ mod test {
         let server = Server::<MlKem768, Sha3_256>::new(relay_private);
         let shs_materials = SHSMaterials::new("test_server_000".into(), [0u8; SEED_LENGTH]);
         let (s_handshake, mut s_keygen) = server
-            .server_handshake_ntor_v3(
-                &mut rng,
-                &mut rep,
-                &c_handshake,
-                &shs_materials,
-                verification,
-            )
+            .server_handshake_ntor_v3(&mut rng, &mut rep, &c_handshake, &shs_materials)
             .unwrap();
 
-        let (s_msg, mut c_keygen) = client::client_handshake_ntor_v3_part2::<MlKem768>(
-            &c_state,
-            &s_handshake,
-            verification,
-        )
-        .unwrap();
+        let (s_msg, mut c_keygen) =
+            client::client_handshake_ntor_v3_part2::<MlKem768>(&c_state, &s_handshake).unwrap();
 
         assert_eq!(rep.0[..], client_message[..]);
         assert_eq!(s_msg[..], relay_message[..]);
@@ -421,20 +409,15 @@ mod test {
         let y = Decap::<K>::try_from_bytes(&y[..]).expect("failed to parse y");
 
         let client_message = hex!("68656c6c6f20776f726c64");
-        let verification = hex!("78797a7a79");
         let server_message = hex!("486f6c61204d756e646f");
 
         let relay_private = IdentitySecretKey::<MlKem768>::new(b, id.into());
         let relay_public = IdentityPublicKey::<MlKem768>::from(&relay_private); // { pk: B, id };
 
         let mut chs_materials = CHSMaterials::new(&relay_public, "0000000000000000".into());
-        let (state, client_handshake) = client::client_handshake_ntor_v3_no_keygen::<K>(
-            &mut rng,
-            (x, X),
-            chs_materials,
-            &verification,
-        )
-        .unwrap();
+        let (state, client_handshake) =
+            client::client_handshake_ntor_v3_no_keygen::<K>(&mut rng, (x, X), chs_materials)
+                .unwrap();
 
         assert_eq!(client_handshake[..], hex!("9fad2af287ef942632833d21f946c6260c33fae6172b60006e86e4a6911753a2f8307a2bc1870b00b828bb74dbb8fd88e632a6375ab3bcd1ae706aaa8b6cdd1d252fe9ae91264c91d4ecb8501f79d0387e34ad8ca0f7c995184f7d11d5da4f463bebd9151fd3b47c180abc9e044d53565f04d82bbb3bebed3d06cea65db8be9c72b68cd461942088502f67")[..]);
 
@@ -454,21 +437,14 @@ mod test {
 
         let server = Server::<MlKem768, Sha3_256>::new(relay_private);
         let (server_handshake, mut server_keygen) = server
-            .server_handshake_ntor_v3_no_keygen(
-                &mut rng,
-                &mut rep,
-                &client_handshake,
-                materials,
-                &verification,
-            )
+            .server_handshake_ntor_v3_no_keygen(&mut rng, &mut rep, &client_handshake, materials)
             .unwrap();
         assert!(rep.2);
 
         assert_eq!(server_handshake[..], hex!("4bf4814326fdab45ad5184f5518bd7fae25dc59374062698201a50a22954246d2fc5f8773ca824542bc6cf6f57c7c29bbf4e5476461ab130c5b18ab0a91276651202c3e1e87c0d32054c")[..]);
 
         let (server_msg_received, mut client_keygen) =
-            client::client_handshake_ntor_v3_part2(&state, &server_handshake, &verification)
-                .unwrap();
+            client::client_handshake_ntor_v3_part2(&state, &server_handshake).unwrap();
         assert_eq!(&server_msg_received, &server_message);
 
         let (c_keys, s_keys) = {

@@ -20,6 +20,7 @@ use kem::{Decapsulate, Encapsulate};
 use kemeleon::OKemCore;
 use keys::NtorV3KeyGenerator;
 use ptrs::{debug, trace};
+use rand::Rng;
 use rand_core::{CryptoRng, CryptoRngCore, RngCore};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
@@ -67,13 +68,8 @@ impl<K: OKemCore, D: Digest> ServerHandshake for Server<K, D> {
         };
         let mut rng = rand::thread_rng();
 
-        let (res, reader) = self.server_handshake_ntor_v3(
-            &mut rng,
-            &mut bytes_reply_fn,
-            msg.as_ref(),
-            materials,
-            NTOR3_CIRC_VERIFICATION,
-        )?;
+        let (res, reader) =
+            self.server_handshake_ntor_v3(&mut rng, &mut bytes_reply_fn, msg.as_ref(), materials)?;
         Ok((NtorV3KeyGenerator::new::<ServerRole>(reader), res))
     }
 }
@@ -84,33 +80,35 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
 
     /// Complete an ntor v3 handshake as a server.
     ///
-    /// Use the provided `rng` to generate keys; use the provided
-    /// `reply_fn` to handle incoming client secret message and decide how
-    /// to reply.  The client's handshake is in `message`.  Our private
-    /// key(s) are in `keys`.  The `verification` string must match the
-    /// string provided by th
+    ///    shared_secret_1 = Decapsulate(DKs, ct)
     ///
-    /// On success, return the server handshake message to send, and an XofReader
-    /// to use in generating circuit keys.
+    ///    CTs, shared_secret_2 = Encapsulate(EKc)
+    ///
+    ///    ES = F2(NodeID, shared_secret_1)
+    ///    ES' = F1(ES, ":derive_key")
+    ///    FS = F2(ES', shared_secret_2)
+    ///    context = CTco | EKco | EKso | CTso
+    ///
+    ///    SESSION_KEY = F1(FS, context | PROTOID | ":key_extract")
+    ///
+    /// On success, return the server handshake message to send, and the session keys
     pub(crate) fn server_handshake_ntor_v3(
         &self,
         rng: &mut impl CryptoRngCore,
         reply_fn: &mut impl MsgReply,
         message: impl AsRef<[u8]>,
         materials: &HandshakeMaterials,
-        verification: &[u8],
     ) -> RelayHandshakeResult<(Vec<u8>, NtorV3XofReader)> {
-        self.server_handshake_ntor_v3_no_keygen(rng, reply_fn, message, materials, verification)
+        self.server_handshake_ntor_v3_no_keygen(rng, reply_fn, message, materials)
     }
 
     /// As `server_handshake_ntor_v3`, but take a secret key instead of an RNG.
     pub(crate) fn server_handshake_ntor_v3_no_keygen(
         &self,
         rng: &mut impl CryptoRngCore,
-        reply_fn: &mut impl MsgReply,
+        extension_handle: &mut impl MsgReply,
         message: impl AsRef<[u8]>,
         materials: &HandshakeMaterials,
-        verification: &[u8],
     ) -> RelayHandshakeResult<(Vec<u8>, NtorV3XofReader)> {
         let msg = message.as_ref();
         if CLIENT_MIN_HANDSHAKE_LENGTH > msg.len() {
@@ -176,15 +174,17 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         f1_fs.update(KEY_EXTRACT_ARG);
         let auth = f1_fs.finalize_reset().into_bytes();
 
-        // // ntor_v3 - Verify the message we received.
-        // // example of maybe cleaner way to use HMACs
-        // let computed_mac: DigestVal = {
-        //     mac.write(client_msg)
-        //         .map_err(into_internal!("Can't compute MAC input."))?;
-        //     mac.take().finalize().into()
-        // };
+        let client_extensions = decrypt(&ephemeral_secret, client_msg);
+        let extensions_reply = extension_handle.reply(&client_extensions[..]);
 
-        // let plaintext_msg = decrypt(&enc_key, client_msg);
+        let pad_len = rng.gen_range(SERVER_MIN_PAD_LENGTH..SERVER_MAX_PAD_LENGTH); // TODO - recalculate these
+                                                                                   // // ntor_v3 - Verify the message we received.
+                                                                                   // // example of maybe cleaner way to use HMACs
+                                                                                   // let computed_mac: DigestVal = {
+                                                                                   //     mac.write(client_msg)
+                                                                                   //         .map_err(into_internal!("Can't compute MAC input."))?;
+                                                                                   //     mac.take().finalize().into()
+                                                                                   // };
 
         // // Handle extension messages and (optionally) craft a reply.
         // let reply = reply_fn.reply(&plaintext_msg);
@@ -209,7 +209,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         materials: &HandshakeMaterials,
         authcode: Authcode,
     ) -> RelayHandshakeResult<Vec<u8>> {
-        todo!("waiting on parse")
+        todo!("is this necessary?")
     }
 
     fn try_parse_client_handshake(
