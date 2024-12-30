@@ -2,19 +2,24 @@
 // #![warn(missing_docs)]
 #![allow(unused)]
 
+use digest::FixedOutputReset;
+
 pub mod client;
 pub mod common;
+pub mod extensions;
 pub mod framing;
 pub mod proto;
 pub mod server;
 pub use client::{Client, ClientBuilder};
-use digest::FixedOutputReset;
 pub use server::{Server, ServerBuilder};
+
 
 #[rustfmt::skip]
 pub(crate) mod constants;
 pub(crate) mod handshake;
 pub(crate) mod sessions;
+pub(crate) mod traits;
+pub use traits::Digest;
 
 #[cfg(test)]
 mod testing;
@@ -32,6 +37,13 @@ macro_rules! transport_name {
 }
 pub(crate) use transport_name;
 
+macro_rules! type_name {
+    ($t:ty) => {
+        "{<$t>::NAME}"
+    };
+}
+pub(crate) use type_name;
+
 pub const TRANSPORT_NAME: &str = transport_name!();
 
 #[cfg(test)]
@@ -48,16 +60,6 @@ pub mod dev {
 
     /// Server obfs4 arguments based on pre-generated dev key `DEV_PRIV_KEY`.
     pub const SERVER_ARGS: &str = "drbg-seed=0a0b0c0d0e0f0a0b0c0d0e0f0a0b0c0d0e0f0a0b0c0d0e0f;node-id=0000000000000000000000000000000000000000;private-key=3031323334353637383961626364656666656463626139383736353433323130";
-}
-
-pub trait Digest:
-    digest::Digest + digest::core_api::BlockSizeUser + digest::FixedOutputReset + Clone
-{
-}
-
-impl<D: digest::Digest + digest::core_api::BlockSizeUser + digest::FixedOutputReset + Clone> Digest
-    for D
-{
 }
 
 /*

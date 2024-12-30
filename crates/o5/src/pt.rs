@@ -1,5 +1,6 @@
 use crate::{
-    constants::*, handshake::IdentityPublicKey, proto::O5Stream, transport_name, Digest, Error,
+    constants::*, handshake::IdentityPublicKey, proto::O5Stream, transport_name, type_name, Digest,
+    Error,
 };
 
 use std::{
@@ -29,10 +30,6 @@ pub struct Transport<T, K, D> {
     _d: PhantomData<D>,
 }
 
-impl O5PT {
-    pub const NAME: &'static str = concat!(transport_name!(), "_ml-kem768", "_sha3-256");
-}
-
 impl<T, K, D> ptrs::PluggableTransport<T> for Transport<T, K, D>
 where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
@@ -45,7 +42,7 @@ where
     type ServerBuilder = crate::ServerBuilder<T, K, D>;
 
     fn name() -> String {
-        concat!(transport_name!(), "_ml-kem768", "_sha3-256").into()
+        concat!(transport_name!(), "_", type_name!(K), "_", type_name!(D)).into()
     }
 
     fn client_builder() -> <Self as ptrs::PluggableTransport<T>>::ClientBuilder {
@@ -261,28 +258,30 @@ mod test {
 
     #[test]
     fn check_name() {
+        const EXPECTED_NAME: &str = "o5_ml-kem768_sha3-256";
+
         let pt_name = <O5PT as ptrs::PluggableTransport<TcpStream>>::name();
-        assert_eq!(pt_name, O5PT::NAME);
+        assert_eq!(pt_name, EXPECTED_NAME);
 
         let cb_name = <crate::ClientBuilder<MlKem768, Sha3_256> as ptrs::ClientBuilder<
             TcpStream,
         >>::method_name();
-        assert_eq!(cb_name, O5PT::NAME);
+        assert_eq!(cb_name, EXPECTED_NAME);
 
         let sb_name =
             <crate::ServerBuilder<TcpStream, MlKem768, Sha3_256> as ptrs::ServerBuilder<
                 TcpStream,
             >>::method_name();
-        assert_eq!(sb_name, O5PT::NAME);
+        assert_eq!(sb_name, EXPECTED_NAME);
 
         let ct_name = <crate::Client<MlKem768, Sha3_256> as ptrs::ClientTransport<
             TcpStream,
             crate::Error,
         >>::method_name();
-        assert_eq!(ct_name, O5PT::NAME);
+        assert_eq!(ct_name, EXPECTED_NAME);
 
         let st_name =
             <crate::Server<MlKem768, Sha3_256> as ptrs::ServerTransport<TcpStream>>::method_name();
-        assert_eq!(st_name, O5PT::NAME);
+        assert_eq!(st_name, EXPECTED_NAME);
     }
 }

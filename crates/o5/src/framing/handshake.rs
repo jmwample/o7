@@ -48,14 +48,14 @@ pub struct ServerHandshakeMessage<D: Digest, S: ShsState> {
 }
 
 /// State tracked when constructing and sending an outgoing server handshake
-pub struct ServerStateOutgoing<'a> {
+pub struct ServerStateOutgoing<'a, D: Digest> {
     pub(crate) pad_len: usize,
     pub(crate) epoch_hour: String,
-    pub(crate) ephemeral_secret: Zeroizing<[u8; 32]>,
+    pub(crate) ephemeral_secret: HandshakeEphemeralSecret<D>,
     pub(crate) hs_materials: &'a SHSMaterials,
     pub(crate) encrypted_extension_reply: &'a [u8],
 }
-impl<'a> ShsState for ServerStateOutgoing<'a> {}
+impl<'a, D: Digest> ShsState for ServerStateOutgoing<'a, D> {}
 
 /// State tracked when parsing and operating on an incoming server handshake
 pub struct ServerStateIncoming {
@@ -73,7 +73,7 @@ impl<'a, D: Digest, S: ShsState> ServerHandshakeMessage<D, S> {
     }
 }
 
-impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a>> {
+impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a, D>> {
     /// Serialize the Server Hello Message
     ///
     /// Given a properly processed client handshake, the Server handshake is then constructed as:
@@ -193,25 +193,29 @@ pub struct ClientStateOutgoing<K: OKemCore> {
 impl<K: OKemCore> ChsState for ClientStateOutgoing<K> {}
 
 /// State tracked when parsing and operating on an incoming client handshake
-pub struct ClientStateIncoming {
-    ephemeral_secret: Zeroizing<[u8; 32]>,
+pub struct ClientStateIncoming<D: Digest> {
+    ephemeral_secret: HandshakeEphemeralSecret<D>,
+    extensions: Vec<NtorV3Extension>,
 }
-impl ChsState for ClientStateIncoming {}
+impl<D: Digest> ChsState for ClientStateIncoming<D> {}
 
-impl ClientStateIncoming {
-    pub(crate) fn new(ephemeral_secret: Zeroizing<[u8; 32]>) -> Self {
-        Self { ephemeral_secret }
+impl<D: Digest> ClientStateIncoming<D> {
+    pub(crate) fn new(ephemeral_secret: HandshakeEphemeralSecret<D>) -> Self {
+        Self {
+            ephemeral_secret,
+            extensions: Vec::new(),
+        }
     }
 }
 
-impl<K> ClientHandshakeMessage<K, ClientStateIncoming>
+impl<K, D: Digest> ClientHandshakeMessage<K, ClientStateIncoming<D>>
 where
     K: OKemCore,
     <K as OKemCore>::EncapsulationKey: Clone, // TODO: Is this necessary?
 {
     pub(crate) fn new(
         client_session_pubkey: EphemeralPub<K>,
-        state: ClientStateIncoming,
+        state: ClientStateIncoming<D>,
         epoch_hour: Option<String>,
     ) -> Self {
         Self {
@@ -221,8 +225,12 @@ where
         }
     }
 
-    pub(crate) fn get_ephemeral_secret(&self) -> Zeroizing<[u8; 32]> {
+    pub(crate) fn get_ephemeral_secret(&self) -> HandshakeEphemeralSecret<D> {
         self.state.ephemeral_secret.clone()
+    }
+
+    pub(crate) fn get_extensions(&self) -> Vec<u8> {
+        vec![] // TODO: Flesh out extension serialization
     }
 }
 

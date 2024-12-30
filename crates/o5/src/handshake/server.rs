@@ -139,31 +139,37 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         let client_session_ek = client_hs.get_public();
         let ephemeral_secret = client_hs.get_ephemeral_secret();
 
+        // Create the server side KEM challenge.
         let (ciphertext, shared_secret_2) = client_session_ek
             .encapsulate(rng)
             .map_err(|_| RelayHandshakeError::FailedEncapsulation)?;
 
-        // set up our hash fn
         let mut f1_es = SimpleHmac::<D>::new_from_slice(ephemeral_secret.as_ref())
             .expect("keying hmac should never fail");
-        f1_es.update(&KEY_DERIVE_ARG);
 
         // compute the Session Ephemeral Secret
-        let session_ephemeral = f1_es.finalize_reset().into_bytes();
+        let derivation_ephemeral = {
+            f1_es.reset();
+            f1_es.update(&KEY_DERIVE_ARG);
+            f1_es.finalize_reset().into_bytes()
+        };
+
+        let mut f2 = SimpleHmac::<D>::new_from_slice(derivation_ephemeral.as_ref())
+            .expect("keying hmac should never fail");
 
         // compute our Combiner Ephemeral Secret
-        let mut f2 = SimpleHmac::<D>::new_from_slice(session_ephemeral.as_ref())
-            .expect("keying hmac should never fail");
-        f2.update(&shared_secret_2.as_bytes()[..]);
-        let mut combiner_ephemeral = Zeroizing::new([0u8; ENC_KEY_LEN]);
-        combiner_ephemeral.copy_from_slice(&f2.finalize_reset().into_bytes()[..ENC_KEY_LEN]);
+        let combiner_ephemeral = {
+            f2.reset();
+            f2.update(&shared_secret_2.as_bytes()[..]);
+            Zeroizing::new(f2.finalize_reset().into_bytes())
+        };
 
         // Handshake context = EKco || CTco || EKso || CTso || protocol_id
         let mut context = {
             let mut c = SecretBuf::new();
             c.write(&client_session_ek.as_bytes()[..])
                 .and_then(|_| c.write(&message.as_ref()[..])) // TODO: We need less than the whole message
-                .and_then(|_| c.write(Self::name()))
+                .and_then(|_| c.write(Self::protocol_id()))
                 .map_err(|_| {
                     RelayHandshakeError::FrameError("failed to wire reply context".into())
                 })?;
@@ -191,20 +197,21 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
 
         // Handle extension messages and (optionally) craft a reply.
         let extensions_reply = extension_handle
-            .reply(client_hs.get_extensions())
+            .reply(&client_hs.get_extensions())
             .unwrap_or_default();
-        let encrypted_extension_reply = &encrypt(&session_key, &extensions_reply);
+        let encrypted_extension_reply = &encrypt::<D>(&session_key, &extensions_reply);
 
         let pad_len = rng.gen_range(SERVER_MIN_PAD_LENGTH..SERVER_MAX_PAD_LENGTH); // TODO - recalculate these
 
-        let state_outgoing = ServerStateOutgoing {
+        let state_outgoing = ServerStateOutgoing::<D> {
             pad_len,
             epoch_hour: get_epoch_hour().to_string(),
             hs_materials: materials,
             encrypted_extension_reply,
             ephemeral_secret,
         };
-        let server_hs_msg = ServerHandshakeMessage::new(auth, state_outgoing);
+        let server_hs_msg =
+            ServerHandshakeMessage::<D, ServerStateOutgoing<D>>::new(auth, state_outgoing);
 
         // okay &= ct::bool_to_choice(reply.is_some());
         // let reply = reply.unwrap_or_default();
@@ -222,7 +229,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
 
     pub(crate) fn complete_server_hs(
         &self,
-        client_hs: &ClientHandshakeMessage<K, ClientStateIncoming>,
+        client_hs: &ClientHandshakeMessage<K, ClientStateIncoming<D>>,
         materials: &HandshakeMaterials,
         authcode: Authcode<D>,
     ) -> RelayHandshakeResult<Vec<u8>> {
@@ -233,7 +240,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         &self,
         b: impl AsRef<[u8]>,
         materials: &HandshakeMaterials,
-    ) -> RelayHandshakeResult<ClientHandshakeMessage<K, ClientStateIncoming>> {
+    ) -> RelayHandshakeResult<ClientHandshakeMessage<K, ClientStateIncoming<D>>> {
         let buf = b.as_ref();
 
         if CLIENT_MIN_HANDSHAKE_LENGTH > buf.len() {
@@ -259,21 +266,26 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             .decapsulate(&client_ct)
             .map_err(|e| RelayHandshakeError::FailedDecapsulation)?;
 
-        // Compute the Ephemeral Secret
         let node_id = self.get_identity().id;
-        let mut f2 = SimpleHmac::<Sha3_256>::new_from_slice(node_id.as_bytes())
+        let mut f2 = SimpleHmac::<D>::new_from_slice(node_id.as_bytes())
             .expect("keying server f2 hmac should never fail");
-        f2.update(&shared_secret_1.as_bytes()[..]);
-        let mut ephemeral_secret = Zeroizing::new([0u8; ENC_KEY_LEN]);
-        ephemeral_secret.copy_from_slice(&f2.finalize_reset().into_bytes()[..ENC_KEY_LEN]);
 
-        // derive the mark from the Ephemeral Secret
+        // Compute the Ephemeral Secret
+        let ephemeral_secret = {
+            f2.update(&shared_secret_1.as_bytes()[..]);
+            Zeroizing::new(f2.finalize_reset().into_bytes())
+        };
+
         let mut f1_es = SimpleHmac::<Sha3_256>::new_from_slice(ephemeral_secret.as_ref())
             .expect("Keying server f1_es hmac should never fail");
-        f1_es.update(&client_ek_obfs);
-        f1_es.update(&client_ct_obfs);
-        f1_es.update(CLIENT_MARK_ARG);
-        let client_mark = f1_es.finalize_reset().into_bytes();
+
+        // derive the mark from the Ephemeral Secret
+        let client_mark = {
+            f1_es.update(&client_ek_obfs);
+            f1_es.update(&client_ct_obfs);
+            f1_es.update(CLIENT_MARK_ARG);
+            f1_es.finalize_reset().into_bytes()
+        };
 
         trace!(
             "{} mark?:{}",
@@ -367,7 +379,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         // // pad_len doesn't matter when we are reading client handshake msg
         let client_ephemeral_ek = EphemeralPub::<K>::try_from_bytes(client_ek_obfs)
             .map_err(|_| RelayHandshakeError::FailedParse)?;
-        Ok(ClientHandshakeMessage::<K, ClientStateIncoming>::new(
+        Ok(ClientHandshakeMessage::<K, ClientStateIncoming<D>>::new(
             client_ephemeral_ek,
             ClientStateIncoming::new(ephemeral_secret),
             Some(epoch_hour),

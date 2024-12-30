@@ -12,7 +12,7 @@ use crate::{
     handshake::{IdentityPublicKey, IdentitySecretKey},
     proto::{MaybeTimeout, O5Stream},
     sessions::{Initialized, ServerSession, Session},
-    Digest, Error, Result,
+    transport_name, type_name, Digest, Error, Result,
 };
 
 use std::{
@@ -31,7 +31,7 @@ use tokio::time::{Duration, Instant};
 use tokio_util::codec::Encoder;
 use tor_cell::relaycell::extend::NtorV3Extension;
 
-const STATE_FILENAME: &str = "obfs4_state.json";
+const STATE_FILENAME: &str = "o5_state.json";
 
 pub struct ServerBuilder<T, K: OKemCore, D: Digest> {
     pub statefile_path: Option<String>,
@@ -253,8 +253,6 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
     pub fn new_from_random<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
         let mut id = [0_u8; 20];
 
-        // Generated identity secret key does not need to be elligator2 representable
-        // so we can use the regular dalek_x25519 key generation.
         let identity_keys = IdentitySecretKey::<K>::random_from_rng(rng);
 
         let pk = IdentityPublicKey::<K>::from(&identity_keys);
@@ -314,6 +312,10 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
 
     pub(crate) fn get_identity(&self) -> IdentityPublicKey<K> {
         self.identity_keys.pk.clone()
+    }
+
+    pub(crate) fn protocol_id<'a>() -> &'a [u8] {
+        concat!(transport_name!(), "_", type_name!(K), "_", type_name!(D)).as_bytes()
     }
 }
 
