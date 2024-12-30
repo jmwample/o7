@@ -154,7 +154,7 @@ impl<K: OKemCore, D: Digest> Client<K, D> {
 
         let deadline = self.handshake_timeout.map(|d| Instant::now() + d);
 
-        session.handshake::<T>(stream, deadline).await
+        session.handshake::<T, D>(stream, deadline).await
     }
 
     /// On a failed handshake the client will read for the remainder of the
@@ -173,7 +173,7 @@ impl<K: OKemCore, D: Digest> Client<K, D> {
 
         let deadline = self.handshake_timeout.map(|d| Instant::now() + d);
 
-        session.handshake::<T>(stream, deadline).await
+        session.handshake::<T, D>(stream, deadline).await
     }
 }
 

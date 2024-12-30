@@ -235,8 +235,8 @@ pub enum RelayHandshakeError {
     #[error("Failed to parse cryptographic value")]
     FailedParse,
 
-    /// Error occured while creating a frame.
-    #[error("Problem occured while building handshake")]
+    /// Error occurred while creating a frame.
+    #[error("Problem occurred while building handshake")]
     FrameError(String),
 
     /// An internal error.

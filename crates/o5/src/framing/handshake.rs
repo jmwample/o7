@@ -6,8 +6,8 @@ use crate::{
     constants::*,
     framing::FrameError,
     handshake::{
-        decrypt, encrypt, Authcode, CHSMaterials, EphemeralKey, EphemeralPub, SHSMaterials,
-        SessionSharedSecret, ENC_KEY_LEN,
+        decrypt, encrypt, Authcode, CHSMaterials, EphemeralKey, EphemeralPub,
+        HandshakeEphemeralSecret, SHSMaterials, SessionSharedSecret, ENC_KEY_LEN,
     },
     Digest, Error, Result,
 };
@@ -42,25 +42,36 @@ pub trait ShsState {}
 
 /// Used by the client when parsing the handshake sent by the server.
 pub struct ServerHandshakeMessage<D: Digest, S: ShsState> {
-    server_auth: Authcode,
-    aux_data: Vec<NtorV3Extension>,
+    server_auth: Authcode<D>,
     state: S,
     _digest: PhantomData<D>,
 }
 
 /// State tracked when constructing and sending an outgoing server handshake
 pub struct ServerStateOutgoing<'a> {
-    pad_len: usize,
-    epoch_hour: String,
-    ephemeral_secret: Zeroizing<[u8; 32]>,
-    hs_materials: SHSMaterials,
-    encrypted_extension_reply: &'a [u8],
+    pub(crate) pad_len: usize,
+    pub(crate) epoch_hour: String,
+    pub(crate) ephemeral_secret: Zeroizing<[u8; 32]>,
+    pub(crate) hs_materials: &'a SHSMaterials,
+    pub(crate) encrypted_extension_reply: &'a [u8],
 }
 impl<'a> ShsState for ServerStateOutgoing<'a> {}
 
 /// State tracked when parsing and operating on an incoming server handshake
-pub struct ServerStateIncoming {}
+pub struct ServerStateIncoming {
+    aux_data: Vec<NtorV3Extension>,
+}
 impl ShsState for ServerStateIncoming {}
+
+impl<'a, D: Digest, S: ShsState> ServerHandshakeMessage<D, S> {
+    pub fn new(auth: Authcode<D>, state: S) -> Self {
+        Self {
+            server_auth: auth,
+            state,
+            _digest: PhantomData,
+        }
+    }
+}
 
 impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a>> {
     /// Serialize the Server Hello Message
@@ -86,14 +97,13 @@ impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a>> {
         rng: &mut impl CryptoRngCore,
         buf: &mut impl BufMut,
         ciphertext: impl AsRef<[u8]>,
-        outgoing: &ServerStateOutgoing<'a>,
     ) -> Result<()> {
         // -------------------------------- [ ST-PQ-OBFS ] -------------------------------- //
         // Security Theoretic, KEM, Obfuscated Key exchange
 
         trace!("serializing server handshake");
 
-        let ephemeral_secret = &outgoing.ephemeral_secret;
+        let ephemeral_secret = &self.state.ephemeral_secret;
 
         // set up our hash fn
         let mut f1_es = SimpleHmac::<D>::new_from_slice(ephemeral_secret.as_ref())
@@ -115,7 +125,7 @@ impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a>> {
             let mut hello_msg = Vec::new();
             hello_msg
                 .write(ciphertext.as_ref())
-                .and_then(|_| hello_msg.write(&self.server_auth))
+                .and_then(|_| hello_msg.write(&self.server_auth[..]))
                 .and_then(|_| hello_msg.write(&self.state.encrypted_extension_reply))
                 .and_then(|_| hello_msg.write(&pad))
                 .and_then(|_| hello_msg.write(&mark))
@@ -146,22 +156,6 @@ impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a>> {
 
         // //------------------------------------[NTORv3]-------------------------------
 
-        // let secret_input = {
-        //     let mut si = SecretBuf::new();
-        //     si.write(&xy.as_bytes())
-        //         .and_then(|_| si.write(&xb.as_bytes()))
-        //         .and_then(|_| si.write(&keypair.pk.id))
-        //         .and_then(|_| si.write(&keypair.pk.pk.as_bytes()))
-        //         .and_then(|_| si.write(&client_pk.as_bytes()))
-        //         .and_then(|_| si.write(&y_pk.as_bytes()))
-        //         .and_then(|_| si.write(PROTOID))
-        //         .and_then(|_| si.write(&Encap(verification)))
-        //         .map_err(into_internal!("can't derive ntor3 secret_input"))?;
-        //     si
-        // };
-        // let ntor_key_seed = h_key_seed(&secret_input);
-        // let verify = h_verify(&secret_input);
-
         // let (enc_key, keystream) = {
         //     let mut xof = DigestWriter(Shake256::default());
         //     xof.write(&T_FINAL)
@@ -171,22 +165,6 @@ impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a>> {
         //     let mut enc_key = Zeroizing::new([0_u8; ENC_KEY_LEN]);
         //     r.read(&mut enc_key[..]);
         //     (enc_key, r)
-        // };
-        // let encrypted_reply = encrypt(&enc_key, &reply);
-        // let auth: DigestVal = {
-        //     let mut auth = DigestWriter(Sha3_256::default());
-        //     auth.write(&T_AUTH)
-        //         .and_then(|_| auth.write(&verify))
-        //         .and_then(|_| auth.write(&keypair.pk.id))
-        //         .and_then(|_| auth.write(&keypair.pk.pk.as_bytes()))
-        //         .and_then(|_| auth.write(&y_pk.as_bytes()))
-        //         .and_then(|_| auth.write(&client_pk.as_bytes()))
-        //         .and_then(|_| auth.write(&msg_mac))
-        //         .and_then(|_| auth.write(&Encap(&encrypted_reply)))
-        //         .and_then(|_| auth.write(PROTOID))
-        //         .and_then(|_| auth.write(&b"Server"[..]))
-        //         .map_err(into_internal!("can't derive ntor3 authentication"))?;
-        //     auth.take().finalize().into()
         // };
 
         Ok(())
@@ -291,20 +269,20 @@ where
     ///    CTco is  client_ciphertext_obfuscated
     ///    E is the string representation of the number of hours since the UNIX epoch.
     ///    P_C is [clientMinPadLength,clientMaxPadLength] bytes of random padding.
-    pub fn marshall(
+    pub fn marshall<D: Digest>(
         &mut self,
         rng: &mut impl CryptoRngCore,
         buf: &mut impl BufMut,
-    ) -> EncodeResult<Zeroizing<[u8; ENC_KEY_LEN]>> {
+    ) -> EncodeResult<HandshakeEphemeralSecret<D>> {
         trace!("serializing client handshake");
-        self.marshall_inner::<Sha3_256>(rng, buf) // TODO
+        self.marshall_inner::<D>(rng, buf)
     }
 
     fn marshall_inner<D: Digest>(
         &mut self,
         rng: &mut impl CryptoRngCore,
         buf: &mut impl BufMut,
-    ) -> EncodeResult<Zeroizing<[u8; ENC_KEY_LEN]>> {
+    ) -> EncodeResult<HandshakeEphemeralSecret<D>> {
         // serialize our extensions into a message
         let mut message = BytesMut::new();
         NtorV3Extension::write_many_onto(self.state.hs_materials.aux_data.borrow(), &mut message)?;
@@ -319,19 +297,25 @@ where
         // compute our ephemeral secret
         let mut f2 = SimpleHmac::<D>::new_from_slice(node_id.as_bytes())
             .expect("keying hmac should never fail");
-        f2.update(&shared_secret.as_bytes()[..]);
-        let mut ephemeral_secret = Zeroizing::new([0u8; ENC_KEY_LEN]);
-        ephemeral_secret.copy_from_slice(&f2.finalize_reset().into_bytes()[..ENC_KEY_LEN]);
+
+        let ephemeral_secret = {
+            f2.reset();
+            f2.update(&shared_secret.as_bytes()[..]);
+            Zeroizing::new(f2.finalize_reset().into_bytes())
+        };
 
         // set up our hash fn
         let mut f1_es = SimpleHmac::<D>::new_from_slice(ephemeral_secret.as_ref())
             .expect("keying hmac should never fail");
 
         // compute the Mark
-        f1_es.update(&self.client_session_pubkey.as_bytes()[..]);
-        f1_es.update(&ciphertext.as_bytes()[..]);
-        f1_es.update(CLIENT_MARK_ARG);
-        let mark = f1_es.finalize_reset().into_bytes();
+        let mark = {
+            f1_es.reset();
+            f1_es.update(&self.client_session_pubkey.as_bytes()[..]);
+            f1_es.update(&ciphertext.as_bytes()[..]);
+            f1_es.update(CLIENT_MARK_ARG);
+            f1_es.finalize_reset().into_bytes()
+        };
 
         // Encrypt the message (Extensions etc.)
         //
@@ -339,7 +323,7 @@ where
         // identity secret key is leaked this text can be decrypted. Once we receive the
         // server response w/ secrets based on ephemeral (session) secrets any further data has
         // forward secrecy.
-        let encrypted_msg = encrypt(&ephemeral_secret, &message);
+        let encrypted_msg = encrypt::<D>(&ephemeral_secret, &message);
 
         // Generate the padding
         let pad_len = rng.gen_range(CLIENT_MIN_PAD_LENGTH..CLIENT_MAX_PAD_LENGTH); // TODO - recalculate these

@@ -29,6 +29,7 @@ rand_core = "0.6.4"
 
 ## Crypto
 digest = { version = "0.10.7", features=["mac", "core-api"]}
+generic-array = { version = "1.1.1", features=["zeroize"]}
 typenum = "1.17.0"
 block-buffer = "0.10.4"
 siphasher = "1.0.0"

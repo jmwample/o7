@@ -2,9 +2,9 @@
 //!
 /// Session state management as a way to organize session establishment and
 /// steady state transfer.
-use crate::common::drbg;
+use crate::{common::drbg, Digest};
 
-use kemeleon::{MlKem768, OKemCore};
+use kemeleon::OKemCore;
 use tor_bytes::Readable;
 
 mod client;

@@ -5,19 +5,20 @@
 //! encrypt data (without forward secrecy) after it sends the first
 //! message.
 
-use crate::common::ntor_arti::ClientHandshakeComplete;
+use crate::{common::ntor_arti::ClientHandshakeComplete, Digest};
 
 use cipher::{KeyIvInit as _, StreamCipher as _};
-use digest::{Digest as _, ExtendableOutput as _, XofReader as _};
+use digest::{Digest as _, ExtendableOutput as _, OutputSizeUser, XofReader as _};
+use generic_array::{ArrayLength, GenericArray};
 use kemeleon::{Encode, OKemCore};
 use tor_bytes::{EncodeResult, Writeable, Writer};
 use tor_llcrypto::cipher::aes::Aes256Ctr;
 use tor_llcrypto::d::{Sha3_256, Shake256};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 mod keys;
+pub(crate) use keys::NtorV3KeyGenerator;
 use keys::NtorV3XofReader;
-pub(crate) use keys::{Authcode, NtorV3KeyGenerator, AUTHCODE_LENGTH};
 pub use keys::{EphemeralKey, EphemeralPub, IdentityPublicKey, IdentitySecretKey, NtorV3KeyGen};
 
 /// Super trait to be used where we require a distinction between client and server roles.
@@ -65,8 +66,17 @@ type MessageMac = [u8; MAC_LEN];
 /// A key for message authentication codes.
 type MacKey = [u8; MAC_KEY_LEN];
 
-/// A key for symmetric encryption or decryption.
-pub(crate) type SessionSharedSecret = Zeroizing<[u8; ENC_KEY_LEN]>;
+/// Alias for an HMAC output
+type HmacOutput<D> = digest::generic_array::GenericArray<u8, <D as OutputSizeUser>::OutputSize>;
+
+/// HMAC code used to authenticate the server.
+pub(crate) type Authcode<D> = HmacOutput<D>;
+
+/// A key for symmetric encryption and decryption.
+pub(crate) type SessionSharedSecret<D: Digest> = Zeroizing<HmacOutput<D>>;
+
+/// Secret derived using an HMAC, used as the intermediary secret during a handshake.
+pub(crate) type HandshakeEphemeralSecret<D> = Zeroizing<HmacOutput<D>>;
 
 /// An encapsulated value for passing as input to a MAC, digest, or
 /// KDF algorithm.
@@ -151,32 +161,23 @@ fn hash(t: &Encap<'_>, data: &[u8]) -> DigestVal {
 ///
 /// (This isn't safe to do more than once with the same key, but we never
 /// do that in this protocol.)
-pub(crate) fn encrypt(key: &SessionSharedSecret, m: &[u8]) -> Vec<u8> {
+pub(crate) fn encrypt<D: Digest>(key: &SessionSharedSecret<D>, m: &[u8]) -> Vec<u8> {
     let mut d = m.to_vec();
     let zero_iv = Default::default();
-    let k: &[u8; 32] = key;
-    let mut cipher = Aes256Ctr::new(k.into(), &zero_iv);
+    let mut k = [0u8; 32];
+    k[..32].copy_from_slice(&<SessionSharedSecret<D> as AsRef<[u8]>>::as_ref(key)[..32]);
+    let mut cipher = Aes256Ctr::new((&k).into(), &zero_iv);
     cipher.apply_keystream(&mut d);
     d
 }
-/// Perform a symmetric decryption operation and return the encrypted data.
-pub(crate) fn decrypt(key: &SessionSharedSecret, m: &[u8]) -> Vec<u8> {
-    encrypt(key, m)
-}
 
-/// Wrapper around a Digest or ExtendedOutput object that lets us use it
-/// as a tor_bytes::Writer.
-struct DigestWriter<U>(U);
-impl<U: digest::Update> tor_bytes::Writer for DigestWriter<U> {
-    fn write_all(&mut self, bytes: &[u8]) {
-        self.0.update(bytes);
-    }
-}
-impl<U> DigestWriter<U> {
-    /// Consume this wrapper and return the underlying object.
-    fn take(self) -> U {
-        self.0
-    }
+/// Perform a symmetric decryption operation and return the encrypted data.
+pub(crate) fn decrypt<D: Digest>(key: &SessionSharedSecret<D>, m: &[u8]) -> Vec<u8>
+where
+    generic_array::GenericArray<u8, <D as OutputSizeUser>::OutputSize>: Zeroize,
+    <D as OutputSizeUser>::OutputSize: generic_array::ArrayLength,
+{
+    encrypt::<D>(key, m)
 }
 
 /// Hash tweaked with T_KEY_SEED
@@ -186,47 +187,6 @@ fn h_key_seed(d: &[u8]) -> DigestVal {
 /// Hash tweaked with T_VERIFY
 fn h_verify(d: &[u8]) -> DigestVal {
     hash(&T_VERIFY, d)
-}
-
-/// Helper: compute the encryption key and mac_key for the client's
-/// encrypted message.
-///
-/// Takes as inputs `xb` (the shared secret derived from
-/// diffie-hellman as Bx or Xb), the relay's public key information,
-/// the client's public key (B), and the shared verification string.
-fn kdf_msgkdf<K: OKemCore>(
-    xb: &<K as OKemCore>::SharedKey,
-    relay_public: &IdentityPublicKey<K>,
-    client_public: &EphemeralPub<K>,
-    verification: &[u8],
-) -> EncodeResult<(SessionSharedSecret, DigestWriter<Sha3_256>)> {
-    // secret_input_phase1 = Bx | ID | X | B | PROTOID | ENCAP(VER)
-    // phase1_keys = KDF_msgkdf(secret_input_phase1)
-    // (ENC_K1, MAC_K1) = PARTITION(phase1_keys, ENC_KEY_LEN, MAC_KEY_LEN
-    let mut msg_kdf = DigestWriter(Shake256::default());
-    msg_kdf.write(&T_MSGKDF)?;
-    msg_kdf.write(&xb.as_bytes()[..])?;
-    msg_kdf.write(&relay_public.id)?;
-    msg_kdf.write(&client_public.as_bytes()[..])?;
-    msg_kdf.write(&relay_public.ek.as_bytes()[..])?;
-    msg_kdf.write(PROTOID)?;
-    msg_kdf.write(&Encap(verification))?;
-    let mut r = msg_kdf.take().finalize_xof();
-    let mut enc_key = Zeroizing::new([0; ENC_KEY_LEN]);
-    let mut mac_key = Zeroizing::new([0; MAC_KEY_LEN]);
-
-    r.read(&mut enc_key[..]);
-    r.read(&mut mac_key[..]);
-    let mut mac = DigestWriter(Sha3_256::default());
-    {
-        mac.write(&T_MSGMAC)?;
-        mac.write(&Encap(&mac_key[..]))?;
-        mac.write(&relay_public.id)?;
-        mac.write(&relay_public.ek.as_bytes()[..])?;
-        mac.write(&client_public.as_bytes()[..])?;
-    }
-
-    Ok((enc_key, mac))
 }
 
 /// Trait for an object that handle and incoming client message and
@@ -286,7 +246,7 @@ mod test {
     use tor_cell::relaycell::extend::NtorV3Extension;
     use tor_llcrypto::pk::ed25519::Ed25519Identity;
 
-    type K = MlKem768;
+    type O5Client = client::NtorV3Client<MlKem768, Sha3_256>;
     type Decap<T> = <T as OKemCore>::DecapsulationKey;
 
     #[test]
@@ -299,7 +259,8 @@ mod test {
         let relay_message = &b"Greetings, client. I am a robot. Beep boop."[..];
         let materials = CHSMaterials::new(&relay_private.pk, "fake_session_id-1".into());
 
-        let (c_state, c_handshake) = client::client_handshake_ntor_v3(&mut rng, materials).unwrap();
+        let (c_state, c_handshake) =
+            O5Client::client_handshake_ntor_v3(&mut rng, materials).unwrap();
 
         struct Rep(Vec<u8>, Vec<u8>);
         impl MsgReply for Rep {
@@ -317,7 +278,7 @@ mod test {
             .unwrap();
 
         let (s_msg, mut c_keygen) =
-            client::client_handshake_ntor_v3_part2::<MlKem768>(&c_state, &s_handshake).unwrap();
+            O5Client::client_handshake_ntor_v3_part2(&c_state, &s_handshake).unwrap();
 
         assert_eq!(rep.0[..], client_message[..]);
         assert_eq!(s_msg[..], relay_message[..]);
@@ -335,7 +296,7 @@ mod test {
         let relay_private = IdentitySecretKey::random_from_rng(&mut testing_rng());
 
         let materials = CHSMaterials::new(&relay_private.pk, "fake_session_id-1".into());
-        let (mut c_state, c_handshake) = NtorV3Client::<MlKem768>::client1(materials).unwrap();
+        let (mut c_state, c_handshake) = O5Client::client1(materials).unwrap();
 
         let mut rep = |_: &[NtorV3Extension]| Some(vec![]);
 
@@ -369,7 +330,7 @@ mod test {
         let materials = CHSMaterials::new(&relay_private.pk, "client_session_1".into())
             .with_early_data([NtorV3Extension::RequestCongestionControl]);
 
-        let (mut c_state, c_handshake) = NtorV3Client::<MlKem768>::client1(materials).unwrap();
+        let (mut c_state, c_handshake) = O5Client::client1(materials).unwrap();
 
         let mut rep = |msg: &[NtorV3Extension]| -> Option<Vec<NtorV3Extension>> {
             assert_eq!(msg, client_exts);
@@ -402,11 +363,11 @@ mod test {
         let id = <[u8; NODE_ID_LENGTH]>::from_hex(KEYS[0].id).unwrap();
         let x = hex::decode(KEYS[0].x).expect("failed to unhex x");
         let y = hex::decode(KEYS[0].y).expect("failed to unhex y");
-        let b = Decap::<K>::try_from_bytes(&b[..]).expect("failed to parse b");
+        let b = Decap::<MlKem768>::try_from_bytes(&b[..]).expect("failed to parse b");
         let B = b.encapsulation_key(); // K::EncapsulationKey::from(&b);
-        let x = Decap::<K>::try_from_bytes(&x[..]).expect("failed_to parse x");
+        let x = Decap::<MlKem768>::try_from_bytes(&x[..]).expect("failed_to parse x");
         let X = x.encapsulation_key();
-        let y = Decap::<K>::try_from_bytes(&y[..]).expect("failed to parse y");
+        let y = Decap::<MlKem768>::try_from_bytes(&y[..]).expect("failed to parse y");
 
         let client_message = hex!("68656c6c6f20776f726c64");
         let server_message = hex!("486f6c61204d756e646f");
@@ -416,8 +377,7 @@ mod test {
 
         let mut chs_materials = CHSMaterials::new(&relay_public, "0000000000000000".into());
         let (state, client_handshake) =
-            client::client_handshake_ntor_v3_no_keygen::<K>(&mut rng, (x, X), chs_materials)
-                .unwrap();
+            O5Client::client_handshake_ntor_v3_no_keygen(&mut rng, (x, X), chs_materials).unwrap();
 
         assert_eq!(client_handshake[..], hex!("9fad2af287ef942632833d21f946c6260c33fae6172b60006e86e4a6911753a2f8307a2bc1870b00b828bb74dbb8fd88e632a6375ab3bcd1ae706aaa8b6cdd1d252fe9ae91264c91d4ecb8501f79d0387e34ad8ca0f7c995184f7d11d5da4f463bebd9151fd3b47c180abc9e044d53565f04d82bbb3bebed3d06cea65db8be9c72b68cd461942088502f67")[..]);
 
@@ -444,7 +404,7 @@ mod test {
         assert_eq!(server_handshake[..], hex!("4bf4814326fdab45ad5184f5518bd7fae25dc59374062698201a50a22954246d2fc5f8773ca824542bc6cf6f57c7c29bbf4e5476461ab130c5b18ab0a91276651202c3e1e87c0d32054c")[..]);
 
         let (server_msg_received, mut client_keygen) =
-            client::client_handshake_ntor_v3_part2(&state, &server_handshake).unwrap();
+            O5Client::client_handshake_ntor_v3_part2(&state, &server_handshake).unwrap();
         assert_eq!(&server_msg_received, &server_message);
 
         let (c_keys, s_keys) = {
@@ -458,3 +418,44 @@ mod test {
         assert_eq!(c_keys[..], hex!("9c19b631fd94ed86a817e01f6c80b0743a43f5faebd39cfaa8b00fa8bcc65c3bfeaa403d91acbd68a821bf6ee8504602b094a254392a07737d5662768c7a9fb1b2814bb34780eaee6e867c773e28c212ead563e98a1cd5d5b4576f5ee61c59bde025ff2851bb19b721421694f263818e3531e43a9e4e3e2c661e2ad547d8984caa28ebecd3e4525452299be26b9185a20a90ce1eac20a91f2832d731b54502b09749b5a2a2949292f8cfcbeffb790c7790ed935a9d251e7e336148ea83b063a5618fcff674a44581585fd22077ca0e52c59a24347a38d1a1ceebddbf238541f226b8f88d0fb9c07a1bcd2ea764bbbb5dacdaf5312a14c0b9e4f06309b0333b4a")[..]);
     }
 }
+
+// /// Helper: compute the encryption key and mac_key for the client's
+// /// encrypted message.
+// ///
+// /// Takes as inputs `xb` (the shared secret derived from
+// /// diffie-hellman as Bx or Xb), the relay's public key information,
+// /// the client's public key (B), and the shared verification string.
+// fn kdf_msgkdf<K: OKemCore>(
+//     xb: &<K as OKemCore>::SharedKey,
+//     relay_public: &IdentityPublicKey<K>,
+//     client_public: &EphemeralPub<K>,
+//     verification: &[u8],
+// ) -> EncodeResult<(SessionSharedSecret, DigestWriter<Sha3_256>)> {
+//     // secret_input_phase1 = Bx | ID | X | B | PROTOID | ENCAP(VER)
+//     // phase1_keys = KDF_msgkdf(secret_input_phase1)
+//     // (ENC_K1, MAC_K1) = PARTITION(phase1_keys, ENC_KEY_LEN, MAC_KEY_LEN
+//     let mut msg_kdf = DigestWriter(Shake256::default());
+//     msg_kdf.write(&T_MSGKDF)?;
+//     msg_kdf.write(&xb.as_bytes()[..])?;
+//     msg_kdf.write(&relay_public.id)?;
+//     msg_kdf.write(&client_public.as_bytes()[..])?;
+//     msg_kdf.write(&relay_public.ek.as_bytes()[..])?;
+//     msg_kdf.write(PROTOID)?;
+//     msg_kdf.write(&Encap(verification))?;
+//     let mut r = msg_kdf.take().finalize_xof();
+//     let mut enc_key = Zeroizing::new([0; ENC_KEY_LEN]);
+//     let mut mac_key = Zeroizing::new([0; MAC_KEY_LEN]);
+
+//     r.read(&mut enc_key[..]);
+//     r.read(&mut mac_key[..]);
+//     let mut mac = DigestWriter(Sha3_256::default());
+//     {
+//         mac.write(&T_MSGMAC)?;
+//         mac.write(&Encap(&mac_key[..]))?;
+//         mac.write(&relay_public.id)?;
+//         mac.write(&relay_public.ek.as_bytes()[..])?;
+//         mac.write(&client_public.as_bytes()[..])?;
+//     }
+
+//     Ok((enc_key, mac))
+// }

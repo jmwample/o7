@@ -45,7 +45,7 @@ where
     type ServerBuilder = crate::ServerBuilder<T, K, D>;
 
     fn name() -> String {
-        TRANSPORT_NAME.into()
+        concat!(transport_name!(), "_ml-kem768", "_sha3-256").into()
     }
 
     fn client_builder() -> <Self as ptrs::PluggableTransport<T>>::ClientBuilder {
@@ -74,7 +74,7 @@ where
     }
 
     fn method_name() -> String {
-        TRANSPORT_NAME.into()
+        <Self::Transport as ptrs::PluggableTransport<T>>::name()
     }
 
     fn options(&mut self, opts: &Args) -> Result<&mut Self, Self::Error> {
@@ -126,7 +126,7 @@ where
     type Transport = Transport<T, K, D>;
 
     fn method_name() -> String {
-        TRANSPORT_NAME.into()
+        <Self::Transport as ptrs::PluggableTransport<T>>::name()
     }
 
     /// Builds a new PtCommonParameters.
@@ -224,7 +224,7 @@ where
     }
 
     fn method_name() -> String {
-        TRANSPORT_NAME.into()
+        <<<Self as ptrs::ClientTransport<InRW, InErr>>::Builder as ptrs::ClientBuilder<InRW>>::Transport as ptrs::PluggableTransport<InRW>>::name()
     }
 }
 
@@ -246,7 +246,7 @@ where
     }
 
     fn method_name() -> String {
-        TRANSPORT_NAME.into()
+        <<<Self as ptrs::ServerTransport<InRW>>::Builder as ptrs::ServerBuilder<InRW>>::Transport as ptrs::PluggableTransport<InRW>>::name()
     }
 
     fn get_client_params(&self) -> String {

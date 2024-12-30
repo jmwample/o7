@@ -257,79 +257,79 @@ impl KeyGenerator for NtorHkdfKeyGenerator {
     }
 }
 
-/// Alias for an HMAC output, used to validate correctness of a handshake.
-pub(crate) type Authcode = [u8; 32];
-pub(crate) const AUTHCODE_LENGTH: usize = 32;
+// /// Alias for an HMAC output, used to validate correctness of a handshake.
+// pub(crate) type Authcode = [u8; 32];
+// pub(crate) const AUTHCODE_LENGTH: usize = 32;
 
-/// helper: compute a key generator and an authentication code from a set
-/// of ntor parameters.
-///
-/// These parameter names are as described in tor-spec.txt
-fn ntor_derive(
-    xy: &SharedSecret,
-    xb: &SharedSecret,
-    server_pk: &Obfs4NtorPublicKey,
-    x: &PublicKey,
-    y: &PublicKey,
-) -> EncodeResult<(SecretBuf, Authcode)> {
-    // ) -> EncodeResult<(NtorHkdfKeyGenerator, Authcode)> {
-    let server_string = &b"Server"[..];
+// /// helper: compute a key generator and an authentication code from a set
+// /// of ntor parameters.
+// ///
+// /// These parameter names are as described in tor-spec.txt
+// fn ntor_derive(
+//     xy: &SharedSecret,
+//     xb: &SharedSecret,
+//     server_pk: &Obfs4NtorPublicKey,
+//     x: &PublicKey,
+//     y: &PublicKey,
+// ) -> EncodeResult<(SecretBuf, Authcode)> {
+//     // ) -> EncodeResult<(NtorHkdfKeyGenerator, Authcode)> {
+//     let server_string = &b"Server"[..];
 
-    // obfs4 uses a different order than Ntor V1 and accidentally writes the
-    // server's identity public key bytes twice.
-    let mut suffix = SecretBuf::new();
-    suffix.write(&server_pk.pk.as_bytes())?; // b
-    suffix.write(&server_pk.pk.as_bytes())?; // b
-    suffix.write(x.as_bytes())?; // x
-    suffix.write(y.as_bytes())?; // y
-    suffix.write(PROTO_ID)?; // PROTOID
-    suffix.write(&server_pk.id)?; // ID
+//     // obfs4 uses a different order than Ntor V1 and accidentally writes the
+//     // server's identity public key bytes twice.
+//     let mut suffix = SecretBuf::new();
+//     suffix.write(&server_pk.pk.as_bytes())?; // b
+//     suffix.write(&server_pk.pk.as_bytes())?; // b
+//     suffix.write(x.as_bytes())?; // x
+//     suffix.write(y.as_bytes())?; // y
+//     suffix.write(PROTO_ID)?; // PROTOID
+//     suffix.write(&server_pk.id)?; // ID
 
-    // secret_input = EXP(X,y) | EXP(X,b)   OR    = EXP(Y,x) | EXP(B,x)
-    // ^ these are the equivalent x25519 shared secrets concatenated
-    //
-    // message = (secret_input) | b | b | x | y | PROTOID | ID
-    let mut message = SecretBuf::new();
-    message.write(xy.as_bytes())?; // EXP(X,y)
-    message.write(xb.as_bytes())?; // EXP(X,b)
-    message.write(&suffix[..])?; // b | b | x | y | PROTOID | ID
+//     // secret_input = EXP(X,y) | EXP(X,b)   OR    = EXP(Y,x) | EXP(B,x)
+//     // ^ these are the equivalent x25519 shared secrets concatenated
+//     //
+//     // message = (secret_input) | b | b | x | y | PROTOID | ID
+//     let mut message = SecretBuf::new();
+//     message.write(xy.as_bytes())?; // EXP(X,y)
+//     message.write(xb.as_bytes())?; // EXP(X,b)
+//     message.write(&suffix[..])?; // b | b | x | y | PROTOID | ID
 
-    // verify = HMAC_SHA256(msg, T_VERIFY)
-    let verify = {
-        let mut m = Hmac::<Sha256>::new_from_slice(T_VERIFY).expect("Hmac allows keys of any size");
-        m.update(&message[..]);
-        m.finalize()
-    };
+//     // verify = HMAC_SHA256(msg, T_VERIFY)
+//     let verify = {
+//         let mut m = Hmac::<Sha256>::new_from_slice(T_VERIFY).expect("Hmac allows keys of any size");
+//         m.update(&message[..]);
+//         m.finalize()
+//     };
 
-    // auth_input = verify | (suffix) | "Server"
-    // auth_input = verify | b | b | y | x | PROTOID | ID | "Server"
-    //
-    // Again obfs4 uses all of the same fields (with the servers identity public
-    // key duplicated), but in a different order than Ntor V1.
-    let mut auth_input = Vec::new();
-    auth_input.write_and_consume(verify)?; // verify
-    auth_input.write(&suffix[..])?; // b | b | x | y | PROTOID | ID
-    auth_input.write(server_string)?; // "Server"
+//     // auth_input = verify | (suffix) | "Server"
+//     // auth_input = verify | b | b | y | x | PROTOID | ID | "Server"
+//     //
+//     // Again obfs4 uses all of the same fields (with the servers identity public
+//     // key duplicated), but in a different order than Ntor V1.
+//     let mut auth_input = Vec::new();
+//     auth_input.write_and_consume(verify)?; // verify
+//     auth_input.write(&suffix[..])?; // b | b | x | y | PROTOID | ID
+//     auth_input.write(server_string)?; // "Server"
 
-    // auth = HMAC_SHA256(auth_input, T_MAC)
-    let auth_mac = {
-        let mut m = Hmac::<Sha256>::new_from_slice(T_MAC).expect("Hmac allows keys of any size");
-        m.update(&auth_input[..]);
-        m.finalize()
-    };
-    let auth: [u8; 32] = auth_mac.into_bytes()[..].try_into().unwrap();
+//     // auth = HMAC_SHA256(auth_input, T_MAC)
+//     let auth_mac = {
+//         let mut m = Hmac::<Sha256>::new_from_slice(T_MAC).expect("Hmac allows keys of any size");
+//         m.update(&auth_input[..]);
+//         m.finalize()
+//     };
+//     let auth: [u8; 32] = auth_mac.into_bytes()[..].try_into().unwrap();
 
-    // key_seed = HMAC_SHA256(message, T_KEY)
-    let key_seed_bytes = {
-        let mut m = Hmac::<Sha256>::new_from_slice(T_KEY).expect("Hmac allows keys of any size");
-        m.update(&message[..]);
-        m.finalize()
-    };
-    let mut key_seed = SecretBuf::new();
-    key_seed.write_and_consume(key_seed_bytes)?;
+//     // key_seed = HMAC_SHA256(message, T_KEY)
+//     let key_seed_bytes = {
+//         let mut m = Hmac::<Sha256>::new_from_slice(T_KEY).expect("Hmac allows keys of any size");
+//         m.update(&message[..]);
+//         m.finalize()
+//     };
+//     let mut key_seed = SecretBuf::new();
+//     key_seed.write_and_consume(key_seed_bytes)?;
 
-    Ok((key_seed, auth))
-}
+//     Ok((key_seed, auth))
+// }
 
 /// Obfs4 helper trait to ensure that a returned key generator can be used
 /// to create a usable codec and retrieve a session id.

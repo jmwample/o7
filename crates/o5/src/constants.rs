@@ -10,7 +10,6 @@ pub use crate::common::ntor_arti::SESSION_ID_LEN;
 use crate::{
     common::{drbg, x25519_elligator2::REPRESENTATIVE_LENGTH},
     framing,
-    handshake::AUTHCODE_LENGTH,
 };
 
 use std::{marker::PhantomData, time::Duration};
@@ -42,11 +41,11 @@ pub const CLIENT_MIN_HANDSHAKE_LENGTH: usize = REPRESENTATIVE_LENGTH + MARK_LENG
 pub const SERVER_MIN_PAD_LENGTH: usize = 0;
 /// Maximum padding included in a server handshake message
 pub const SERVER_MAX_PAD_LENGTH: usize =
-    MAX_HANDSHAKE_LENGTH - (SERVER_MIN_HANDSHAKE_LENGTH + INLINE_SEED_FRAME_LENGTH);
+    MAX_HANDSHAKE_LENGTH; // TODO // - (SERVER_MIN_HANDSHAKE_LENGTH + INLINE_SEED_FRAME_LENGTH);
 
-/// Minimum possible sever handshake length
-pub const SERVER_MIN_HANDSHAKE_LENGTH: usize =
-    REPRESENTATIVE_LENGTH + AUTHCODE_LENGTH + MARK_LENGTH + MAC_LENGTH;
+// /// Minimum possible sever handshake length // TODO
+// pub const SERVER_MIN_HANDSHAKE_LENGTH: usize =
+//     REPRESENTATIVE_LENGTH + AUTHCODE_LENGTH + MARK_LENGTH + MAC_LENGTH;
 
 //===============================[Framing]=====================================//
 
@@ -77,12 +76,12 @@ pub const KEY_EXTRACT_ARG: &[u8] = b":o5-key_extract";
 pub const KEY_DERIVE_ARG:  &[u8] = b":o5-derive_key";
 
 // argument / parameter names
-pub const NODE_ID_ARG:     &[u8] = b"node-id";
-pub const PUBLIC_KEY_ARG:  &[u8] = b"public-key";
-pub const PRIVATE_KEY_ARG: &[u8] = b"private-key";
-pub const SEED_ARG:        &[u8] = b"drbg-seed";
-pub const CERT_ARG:        &[u8] = b"cert";
-pub const BIAS_CMD_ARG:    &[u8] = b"o5-distBias";
+pub const NODE_ID_ARG:     &str = "node-id";
+pub const PUBLIC_KEY_ARG:  &str = "public-key";
+pub const PRIVATE_KEY_ARG: &str = "private-key";
+pub const SEED_ARG:        &str = "drbg-seed";
+pub const BIAS_CMD_ARG:    &str = "o5-distBias";
+pub const CERT_ARG:        &str = "cert";
 
 // default timeouts
 pub const REPLAY_TTL: Duration = Duration::from_secs(60);

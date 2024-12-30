@@ -6,7 +6,10 @@ use crate::{
         utils::{find_mac_mark, get_epoch_hour},
     },
     constants::*,
-    framing::{ClientHandshakeMessage, ClientStateIncoming, ClientStateOutgoing},
+    framing::{
+        ClientHandshakeMessage, ClientStateIncoming, ClientStateOutgoing, ServerHandshakeMessage,
+        ServerStateOutgoing,
+    },
     handshake::*,
     Digest, Error, Result, Server,
 };
@@ -156,38 +159,52 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         combiner_ephemeral.copy_from_slice(&f2.finalize_reset().into_bytes()[..ENC_KEY_LEN]);
 
         // Handshake context = EKco || CTco || EKso || CTso || protocol_id
-        let mut context = SecretBuf::new();
-        context.write(&client_session_ek.as_bytes()[..])?;
-        context.write(&message.as_ref()[..])?; // TODO: We need less than the whole message
-        context.write(Self::NAME)?;
+        let mut context = {
+            let mut c = SecretBuf::new();
+            c.write(&client_session_ek.as_bytes()[..])
+                .and_then(|_| c.write(&message.as_ref()[..])) // TODO: We need less than the whole message
+                .and_then(|_| c.write(Self::name()))
+                .map_err(|_| {
+                    RelayHandshakeError::FrameError("failed to wire reply context".into())
+                })?;
+            c
+        };
 
-        // Construct the Session Key
         let mut f1_fs = SimpleHmac::<D>::new_from_slice(combiner_ephemeral.as_ref())
             .expect("keying hmac should never fail");
-        f1_fs.update(&context[..]);
-        f1_fs.update(KEY_EXTRACT_ARG);
-        let mut session_key = Zeroizing::new([0u8; ENC_KEY_LEN]);
-        session_key.copy_from_slice(&f1_fs.finalize_reset().into_bytes()[..ENC_KEY_LEN]);
+
+        // Compute the Session Key value used to key our cipher.
+        let session_key = {
+            f1_fs.reset();
+            f1_fs.update(&context[..]);
+            f1_fs.update(KEY_EXTRACT_ARG);
+            Zeroizing::new(f1_fs.finalize_reset().into_bytes())
+        };
 
         // Compute the Server message authentication value
-        f1_fs.update(&context[..]);
-        f1_fs.update(KEY_EXTRACT_ARG);
-        let auth = f1_fs.finalize_reset().into_bytes();
+        let auth = {
+            f1_fs.reset();
+            f1_fs.update(&context[..]);
+            f1_fs.update(SERVER_AUTH_ARG);
+            f1_fs.finalize_reset().into_bytes()
+        };
 
-        let client_extensions = decrypt(&ephemeral_secret, client_msg);
-        let extensions_reply = extension_handle.reply(&client_extensions[..]);
+        // Handle extension messages and (optionally) craft a reply.
+        let extensions_reply = extension_handle
+            .reply(client_hs.get_extensions())
+            .unwrap_or_default();
+        let encrypted_extension_reply = &encrypt(&session_key, &extensions_reply);
 
         let pad_len = rng.gen_range(SERVER_MIN_PAD_LENGTH..SERVER_MAX_PAD_LENGTH); // TODO - recalculate these
-                                                                                   // // ntor_v3 - Verify the message we received.
-                                                                                   // // example of maybe cleaner way to use HMACs
-                                                                                   // let computed_mac: DigestVal = {
-                                                                                   //     mac.write(client_msg)
-                                                                                   //         .map_err(into_internal!("Can't compute MAC input."))?;
-                                                                                   //     mac.take().finalize().into()
-                                                                                   // };
 
-        // // Handle extension messages and (optionally) craft a reply.
-        // let reply = reply_fn.reply(&plaintext_msg);
+        let state_outgoing = ServerStateOutgoing {
+            pad_len,
+            epoch_hour: get_epoch_hour().to_string(),
+            hs_materials: materials,
+            encrypted_extension_reply,
+            ephemeral_secret,
+        };
+        let server_hs_msg = ServerHandshakeMessage::new(auth, state_outgoing);
 
         // okay &= ct::bool_to_choice(reply.is_some());
         // let reply = reply.unwrap_or_default();
@@ -207,7 +224,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         &self,
         client_hs: &ClientHandshakeMessage<K, ClientStateIncoming>,
         materials: &HandshakeMaterials,
-        authcode: Authcode,
+        authcode: Authcode<D>,
     ) -> RelayHandshakeResult<Vec<u8>> {
         todo!("is this necessary?")
     }

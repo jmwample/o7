@@ -352,10 +352,6 @@ impl KeyGenerator for NtorV3XofReader {
     }
 }
 
-/// Alias for an HMAC output, used to validate correctness of a handshake.
-pub(crate) type Authcode = [u8; 32];
-pub(crate) const AUTHCODE_LENGTH: usize = 32;
-
 // /// helper: compute a key generator and an authentication code from a set
 // /// of ntor parameters.
 // ///
