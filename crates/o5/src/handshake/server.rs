@@ -10,7 +10,9 @@ use crate::{
         ClientHandshakeMessage, ClientStateIncoming, ClientStateOutgoing, ServerHandshakeMessage,
         ServerStateOutgoing,
     },
+    handshake::client::NtorV3Client as Client,
     handshake::*,
+    traits::{DigestSizes, FramingSizes},
     Digest, Error, Result, Server,
 };
 
@@ -78,8 +80,13 @@ impl<K: OKemCore, D: Digest> ServerHandshake for Server<K, D> {
 }
 
 impl<K: OKemCore, D: Digest> Server<K, D> {
-    const CLIENT_CT_SIZE: usize = CtSize::<K>::USIZE;
-    const CLIENT_EK_SIZE: usize = EkSize::<K>::USIZE;
+    const CT_SIZE: usize = K::CT_SIZE;
+    const EK_SIZE: usize = K::EK_SIZE;
+    const AUTH_SIZE: usize = D::AUTH_SIZE;
+    pub const SERVER_MIN_HANDSHAKE_LENGTH: usize =
+        K::CT_SIZE + D::AUTH_SIZE + D::MARK_SIZE + D::MAC_SIZE;
+    pub const SERVER_MAX_PAD_LENGTH: usize =
+        MAX_HANDSHAKE_LENGTH - Self::SERVER_MIN_HANDSHAKE_LENGTH;
 
     /// Complete an ntor v3 handshake as a server.
     ///
@@ -114,7 +121,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         materials: &HandshakeMaterials,
     ) -> RelayHandshakeResult<(Vec<u8>, NtorV3XofReader)> {
         let msg = message.as_ref();
-        if CLIENT_MIN_HANDSHAKE_LENGTH > msg.len() {
+        if Client::<K, D>::CLIENT_MIN_HANDSHAKE_LENGTH > msg.len() {
             Err(RelayHandshakeError::EAgain)?;
         }
 
@@ -201,7 +208,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             .unwrap_or_default();
         let encrypted_extension_reply = &encrypt::<D>(&session_key, &extensions_reply);
 
-        let pad_len = rng.gen_range(SERVER_MIN_PAD_LENGTH..SERVER_MAX_PAD_LENGTH); // TODO - recalculate these
+        let pad_len = rng.gen_range(MIN_HANDSHAKE_PAD_LENGTH..Self::SERVER_MAX_PAD_LENGTH); // TODO - recalculate these
 
         let state_outgoing = ServerStateOutgoing::<D> {
             pad_len,
@@ -243,19 +250,17 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
     ) -> RelayHandshakeResult<ClientHandshakeMessage<K, ClientStateIncoming<D>>> {
         let buf = b.as_ref();
 
-        if CLIENT_MIN_HANDSHAKE_LENGTH > buf.len() {
+        if Client::<K, D>::CLIENT_MIN_HANDSHAKE_LENGTH > buf.len() {
             Err(RelayHandshakeError::EAgain)?;
         }
 
         // chunk off the clients encapsulation key
-        let mut client_ek_obfs = vec![0u8; Self::CLIENT_EK_SIZE];
-        client_ek_obfs.copy_from_slice(&buf[0..Self::CLIENT_EK_SIZE]);
+        let mut client_ek_obfs = vec![0u8; Self::EK_SIZE];
+        client_ek_obfs.copy_from_slice(&buf[0..Self::EK_SIZE]);
 
         // chunk off the ciphertext
-        let mut client_ct_obfs = vec![0u8; Self::CLIENT_CT_SIZE];
-        client_ct_obfs.copy_from_slice(
-            &buf[Self::CLIENT_EK_SIZE..Self::CLIENT_EK_SIZE + Self::CLIENT_CT_SIZE],
-        );
+        let mut client_ct_obfs = vec![0u8; Self::CT_SIZE];
+        client_ct_obfs.copy_from_slice(&buf[Self::EK_SIZE..Self::EK_SIZE + Self::CT_SIZE]);
 
         // decode and decapsulate the secret encoded by the client
         let client_ct = <K as OKemCore>::Ciphertext::try_from_bytes(&client_ct_obfs)
@@ -293,25 +298,20 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             hex::encode(client_mark)
         );
 
-        let min_position = Self::CLIENT_CT_SIZE + Self::CLIENT_EK_SIZE + CLIENT_MIN_PAD_LENGTH;
+        let min_position = Self::CT_SIZE + Self::EK_SIZE + MIN_HANDSHAKE_PAD_LENGTH;
 
         // find mark + mac position
-        let pos = match find_mac_mark(
-            client_mark.into(),
-            buf,
-            min_position,
-            MAX_HANDSHAKE_LENGTH,
-            true,
-        ) {
-            Some(p) => p,
-            None => {
-                trace!("{} didn't find mark", materials.session_id);
-                if buf.len() > MAX_HANDSHAKE_LENGTH {
-                    Err(RelayHandshakeError::BadClientHandshake)?
+        let pos =
+            match find_mac_mark::<D>(client_mark, buf, min_position, MAX_HANDSHAKE_LENGTH, true) {
+                Some(p) => p,
+                None => {
+                    trace!("{} didn't find mark", materials.session_id);
+                    if buf.len() > MAX_HANDSHAKE_LENGTH {
+                        Err(RelayHandshakeError::BadClientHandshake)?
+                    }
+                    Err(RelayHandshakeError::EAgain)?
                 }
-                Err(RelayHandshakeError::EAgain)?
-            }
-        };
+            };
 
         // validate he MAC
         let mut mac_found = false;
@@ -323,13 +323,13 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
 
             // compute the expected MAC (if the epoch hour is within the valid range)
             f1_es.reset();
-            f1_es.update(&buf[..pos + MARK_LENGTH]);
+            f1_es.update(&buf[..pos + D::MARK_SIZE]);
             f1_es.update(eh.as_bytes());
             f1_es.update(CLIENT_MAC_ARG);
-            let mac_calculated = &f1_es.finalize_reset().into_bytes()[..MAC_LENGTH];
+            let mac_calculated = &f1_es.finalize_reset().into_bytes()[..D::MAC_SIZE];
 
             // check received mac
-            let mac_received = &buf[pos + MARK_LENGTH..pos + MARK_LENGTH + MAC_LENGTH];
+            let mac_received = &buf[pos + D::MARK_SIZE..pos + D::MARK_SIZE + D::MAC_SIZE];
             trace!(
                 "server {}-{}",
                 hex::encode(mac_calculated),
@@ -371,12 +371,11 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         }
 
         // client should never send any appended padding at the end.
-        if buf.len() != pos + MARK_LENGTH + MAC_LENGTH {
+        if buf.len() != pos + D::MARK_SIZE + D::MAC_SIZE {
             trace!("client sent extra data");
             Err(RelayHandshakeError::BadClientHandshake)?
         }
 
-        // // pad_len doesn't matter when we are reading client handshake msg
         let client_ephemeral_ek = EphemeralPub::<K>::try_from_bytes(client_ek_obfs)
             .map_err(|_| RelayHandshakeError::FailedParse)?;
         Ok(ClientHandshakeMessage::<K, ClientStateIncoming<D>>::new(

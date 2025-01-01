@@ -5,6 +5,7 @@ use kemeleon::{Encode, EncodingSize, KemeleonByteArraySize, OKemCore};
 use ml_kem::{Ciphertext, MlKem768Params};
 use tor_llcrypto::pk::ed25519::ED25519_ID_LEN;
 use typenum::Unsigned;
+use digest::OutputSizeUser;
 
 pub use crate::common::ntor_arti::SESSION_ID_LEN;
 use crate::{
@@ -16,36 +17,10 @@ use std::{marker::PhantomData, time::Duration};
 
 //=========================[Packets / Messages]=================================//
 
-pub(crate) type EkSize<K> = <<K as OKemCore>::EncapsulationKey as Encode>::EncodedSize;
-pub(crate) type CtSize<K> = <<K as OKemCore>::Ciphertext as Encode>::EncodedSize;
-
-pub const SHA256_SIZE: usize = 32;
-pub const MARK_LENGTH: usize = SHA256_SIZE;
-pub const MAC_LENGTH: usize = SHA256_SIZE;
-
 /// Maximum handshake size including padding
 pub const MAX_HANDSHAKE_LENGTH: usize = 16_384;
-const MAX_HANDSHAKE_PAD_LENGTH: usize = 8192;
-const MIN_HANDSHAKE_PAD_LENGTH: usize = 0;
-
-/// Minimum padding allowed in a client handshake message
-pub const CLIENT_MIN_PAD_LENGTH: usize = MIN_HANDSHAKE_PAD_LENGTH + CLIENT_MIN_HANDSHAKE_LENGTH;
-/// Maximum padding included in a client handshake message
-pub const CLIENT_MAX_PAD_LENGTH: usize = MAX_HANDSHAKE_PAD_LENGTH - CLIENT_MIN_HANDSHAKE_LENGTH;
-
-/// Minimum possible valid client handshake length.
-// pub const CLIENT_MIN_HANDSHAKE_LENGTH: usize = REPRESENTATIVE_LENGTH + MARK_LENGTH + MAC_LENGTH;
-pub const CLIENT_MIN_HANDSHAKE_LENGTH: usize = REPRESENTATIVE_LENGTH + MARK_LENGTH + MAC_LENGTH;
-
-/// Minimum padding allowed in a server handshake message
-pub const SERVER_MIN_PAD_LENGTH: usize = 0;
-/// Maximum padding included in a server handshake message
-pub const SERVER_MAX_PAD_LENGTH: usize =
-    MAX_HANDSHAKE_LENGTH; // TODO // - (SERVER_MIN_HANDSHAKE_LENGTH + INLINE_SEED_FRAME_LENGTH);
-
-// /// Minimum possible sever handshake length // TODO
-// pub const SERVER_MIN_HANDSHAKE_LENGTH: usize =
-//     REPRESENTATIVE_LENGTH + AUTHCODE_LENGTH + MARK_LENGTH + MAC_LENGTH;
+pub(crate) const MAX_HANDSHAKE_PAD_LENGTH: usize = 8192;
+pub(crate) const MIN_HANDSHAKE_PAD_LENGTH: usize = 0;
 
 //===============================[Framing]=====================================//
 

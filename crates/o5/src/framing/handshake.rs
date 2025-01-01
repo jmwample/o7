@@ -1,36 +1,23 @@
 use crate::{
-    common::{
-        utils::{get_epoch_hour, make_pad},
-        HmacSha256,
-    },
+    common::utils::{get_epoch_hour, make_pad},
     constants::*,
     framing::FrameError,
     handshake::{
-        decrypt, encrypt, Authcode, CHSMaterials, EphemeralKey, EphemeralPub,
-        HandshakeEphemeralSecret, SHSMaterials, SessionSharedSecret, ENC_KEY_LEN,
+        encrypt, Authcode, CHSMaterials, EphemeralPub, HandshakeEphemeralSecret, SHSMaterials,
     },
-    Digest, Error, Result,
+    Digest, Result,
 };
 
-use block_buffer::Eager;
 use bytes::{BufMut, BytesMut};
-use digest::{
-    core_api::{BlockSizeUser, BufferKindUser, CoreProxy, FixedOutputCore, UpdateCore},
-    Digest as _, HashMarker,
-};
 use hmac::{Mac, SimpleHmac};
-use kem::{Decapsulate, Encapsulate};
+use kem::Encapsulate;
 use kemeleon::{Encode, OKemCore};
 use ptrs::trace;
 use rand::Rng;
 use rand_core::CryptoRngCore;
-use sha3::Sha3_256;
 use tor_bytes::{EncodeError, EncodeResult, Writer};
 use tor_cell::relaycell::extend::NtorV3Extension;
-use typenum::{
-    consts::U256, marker_traits::NonZero, operator_aliases::Le, type_operators::IsLess, Unsigned,
-};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use core::borrow::Borrow;
 use core::marker::PhantomData;
@@ -58,9 +45,7 @@ pub struct ServerStateOutgoing<'a, D: Digest> {
 impl<'a, D: Digest> ShsState for ServerStateOutgoing<'a, D> {}
 
 /// State tracked when parsing and operating on an incoming server handshake
-pub struct ServerStateIncoming {
-    aux_data: Vec<NtorV3Extension>,
-}
+pub struct ServerStateIncoming {}
 impl ShsState for ServerStateIncoming {}
 
 impl<'a, D: Digest, S: ShsState> ServerHandshakeMessage<D, S> {
@@ -334,7 +319,7 @@ where
         let encrypted_msg = encrypt::<D>(&ephemeral_secret, &message);
 
         // Generate the padding
-        let pad_len = rng.gen_range(CLIENT_MIN_PAD_LENGTH..CLIENT_MAX_PAD_LENGTH); // TODO - recalculate these
+        let pad_len = rng.gen_range(MIN_HANDSHAKE_PAD_LENGTH..Self::CLIENT_MAX_PAD_LENGTH); // TODO - recalculate these
         let pad = make_pad(rng, pad_len);
 
         // Write EKco, CTco, MSG, P_C, M_C
@@ -374,9 +359,3 @@ fn to_tor_err(e: impl core::fmt::Debug) -> EncodeError {
         format!("cryptographic encapsulation error: {e:?}"),
     ))
 }
-// The client handshake is X | P_C | M_C | MAC(X | P_C | M_C | E) where:
-//  * X is the client's ephemeral Curve25519 public key representative.
-//  * P_C is [clientMinPadLength,clientMaxPadLength] bytes of random padding.
-//  * M_C is HMAC-SHA256-128(serverIdentity | NodeID, X)
-//  * MAC is HMAC-SHA256-128(serverIdentity | NodeID, X .... E)
-//  * E is the string representation of the number of hours since the UNIX epoch.

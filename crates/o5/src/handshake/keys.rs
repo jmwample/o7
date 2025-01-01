@@ -6,6 +6,7 @@ use crate::{
     },
     constants::*,
     framing::{O5Codec, KEY_MATERIAL_LENGTH},
+    traits::FramingSizes,
     Error, Result,
 };
 
@@ -46,6 +47,8 @@ impl<K: OKemCore> Decapsulate<K::Ciphertext, K::SharedKey> for EphemeralKey<K> {
 }
 
 /// Public key type associated with EphemeralKey.
+/// TODO: WHY DO WE NEED THIS??
+///    if it was for `Readable` & `Writable` implementations --- meh we don't need that
 #[derive(Clone)]
 pub struct EphemeralPub<K: OKemCore>(<K as OKemCore>::EncapsulationKey);
 
@@ -68,7 +71,7 @@ impl<K: OKemCore> Encapsulate<K::Ciphertext, K::SharedKey> for EphemeralPub<K> {
 
 impl<K: OKemCore> Encode for EphemeralPub<K> {
     type Error = <K::EncapsulationKey as Encode>::Error;
-    type EncodedSize = EkSize<K>;
+    type EncodedSize = <<K as OKemCore>::EncapsulationKey as kemeleon::Encode>::EncodedSize;
 
     fn as_bytes(&self) -> ml_kem::array::Array<u8, Self::EncodedSize> {
         self.0.as_bytes()
@@ -131,7 +134,7 @@ impl<K: OKemCore> From<&IdentitySecretKey<K>> for IdentityPublicKey<K> {
 }
 
 impl<K: OKemCore> IdentityPublicKey<K> {
-    const CERT_LENGTH: usize = EkSize::<K>::USIZE + ED25519_ID_LEN;
+    const CERT_LENGTH: usize = K::EK_SIZE + ED25519_ID_LEN;
     const CERT_SUFFIX: &'static str = "==";
 
     /// Construct a new IdentityPublicKey from its components.

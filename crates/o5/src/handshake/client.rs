@@ -1,25 +1,32 @@
+//! Client specific handshake handling implementations.
+
 use std::marker::PhantomData;
+use std::time::Instant;
 
 use crate::{
     common::{
         ct,
         ntor_arti::{
             ClientHandshake, ClientHandshakeComplete, ClientHandshakeMaterials, KeyGenerator,
+            RelayHandshakeError, RelayHandshakeResult,
         },
-        utils::get_epoch_hour,
+        utils::{find_mac_mark, get_epoch_hour},
     },
     constants::*,
-    framing::{handshake::ClientHandshakeMessage, ClientStateOutgoing},
+    framing::handshake::{
+        ClientHandshakeMessage, ClientStateOutgoing, ServerHandshakeMessage, ServerStateIncoming,
+    },
     handshake::{keys::*, *},
-    Error, Result,
+    traits::{DigestSizes, FramingSizes},
+    Digest, Error, Result, Server,
 };
 
 use bytes::BytesMut;
 use digest::CtOutput;
-use hmac::{Hmac, Mac};
+use hmac::{Mac, SimpleHmac};
 use kem::{Decapsulate, Encapsulate};
 use kemeleon::{Encode, OKemCore};
-// use cipher::KeyIvInit;
+use ptrs::trace;
 use rand::{CryptoRng, Rng, RngCore};
 use rand_core::CryptoRngCore;
 use subtle::ConstantTimeEq;
@@ -30,6 +37,7 @@ use tor_llcrypto::{
     d::{Sha3_256, Shake256, Shake256Reader},
     pk::ed25519::Ed25519Identity,
 };
+use typenum::Unsigned;
 use zeroize::Zeroizing;
 
 /// Client state for the o5 (ntor v3) handshake.
@@ -77,7 +85,7 @@ impl<K: OKemCore> HandshakeMaterials<K> {
         HandshakeMaterials {
             node_pubkey: node_pubkey.clone(),
             session_id,
-            pad_len: rand::thread_rng().gen_range(CLIENT_MIN_PAD_LENGTH..CLIENT_MAX_PAD_LENGTH),
+            pad_len: rand::thread_rng().gen_range(MIN_HANDSHAKE_PAD_LENGTH..CLIENT_MAX_PAD_LENGTH),
             aux_data: vec![],
         }
     }
@@ -85,6 +93,10 @@ impl<K: OKemCore> HandshakeMaterials<K> {
     pub fn with_early_data(mut self, data: impl AsRef<[NtorV3Extension]>) -> Self {
         self.aux_data = data.as_ref().to_vec();
         self
+    }
+
+    pub(crate) fn get_identity(&self) -> IdentityPublicKey<K> {
+        self.node_pubkey.clone()
     }
 }
 
@@ -166,6 +178,14 @@ impl<K: OKemCore, D: Digest> ClientHandshake for NtorV3Client<K, D> {
 }
 
 impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
+    const CT_SIZE: usize = K::CT_SIZE;
+    const EK_SIZE: usize = K::EK_SIZE;
+    const AUTH_SIZE: usize = D::AUTH_SIZE;
+    pub const CLIENT_MIN_HANDSHAKE_LENGTH: usize =
+        K::EK_SIZE + K::CT_SIZE + D::MARK_SIZE + D::MAC_SIZE;
+    pub const CLIENT_MAX_PAD_LENGTH: usize =
+        MAX_HANDSHAKE_LENGTH - Self::CLIENT_MIN_HANDSHAKE_LENGTH;
+
     /// Client-side Ntor version 3 handshake, part one.
     ///
     /// Given a secure `rng`, a relay's public key, a secret message to send, generate a new handshake
@@ -290,5 +310,146 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
         // } else {
         //     Err(Error::BadCircHandshakeAuth)
         // }
+    }
+}
+
+impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
+    fn try_parse_server_handshake(
+        &self,
+        b: impl AsRef<[u8]>,
+        state: &HandshakeState<K, D>,
+    ) -> RelayHandshakeResult<ServerHandshakeMessage<D, ServerStateIncoming>> {
+        let buf = b.as_ref();
+
+        if Server::<K, D>::SERVER_MIN_HANDSHAKE_LENGTH > buf.len() {
+            Err(RelayHandshakeError::EAgain)?;
+        }
+
+        let mut server_ct_obfs = vec![0u8; Self::CT_SIZE];
+        server_ct_obfs.copy_from_slice(&buf[..Self::CT_SIZE]);
+
+        // chunk off the ciphertext
+        let mut server_ct_obfs = vec![0u8; Self::CT_SIZE];
+        server_ct_obfs.copy_from_slice(&buf[0..Self::CT_SIZE]);
+
+        // chunk off server authentication value
+        let mut server_auth =
+            Authcode::<D>::clone_from_slice(&buf[Self::CT_SIZE..Self::CT_SIZE + Self::AUTH_SIZE]);
+        // server_auth.copy_from_slice(
+        //     &buf[Self::CT_SIZE..Self::CT_SIZE + Authcode::<D>::USIZE],
+        // );
+
+        // decode and decapsulate the secret encoded by the server
+        let server_ct = <K as OKemCore>::Ciphertext::try_from_bytes(&server_ct_obfs)
+            .map_err(|e| RelayHandshakeError::FailedParse)?;
+        let shared_secret_1 = state
+            .my_sk
+            .decapsulate(&server_ct)
+            .map_err(|e| RelayHandshakeError::FailedDecapsulation)?;
+
+        let node_id = state.materials.get_identity().id;
+        let mut f2 = SimpleHmac::<D>::new_from_slice(node_id.as_bytes())
+            .expect("keying server f2 hmac should never fail");
+
+        // Compute the Ephemeral Secret
+        let ephemeral_secret = {
+            f2.update(&shared_secret_1.as_bytes()[..]);
+            Zeroizing::new(f2.finalize_reset().into_bytes())
+        };
+
+        let mut f1_es = SimpleHmac::<Sha3_256>::new_from_slice(ephemeral_secret.as_ref())
+            .expect("Keying server f1_es hmac should never fail");
+
+        // derive the mark from the Ephemeral Secret
+        let server_mark = {
+            f1_es.update(&server_ct_obfs);
+            f1_es.update(SERVER_MARK_ARG);
+            f1_es.finalize_reset().into_bytes()
+        };
+
+        trace!(
+            "{} mark?:{}",
+            state.materials.session_id,
+            hex::encode(server_mark)
+        );
+
+        let min_position = Self::CT_SIZE + Server::<K, D>::SERVER_MIN_PAD_LENGTH;
+
+        // find mark + mac position
+        let pos = match find_mac_mark(
+            server_mark.into(),
+            buf,
+            min_position,
+            MAX_HANDSHAKE_LENGTH,
+            true,
+        ) {
+            Some(p) => p,
+            None => {
+                trace!("{} didn't find mark", state.materials.session_id);
+                if buf.len() > MAX_HANDSHAKE_LENGTH {
+                    Err(RelayHandshakeError::BadServerHandshake)?
+                }
+                Err(RelayHandshakeError::EAgain)?
+            }
+        };
+
+        // validate he MAC
+        let mut mac_found = false;
+        let mut epoch_hour = String::new();
+        for offset in [0_i64, -1, 1] {
+            // Allow the epoch to be off by up to one hour in either direction
+            trace!("server trying offset: {offset}");
+            let eh = format!("{}", offset + get_epoch_hour() as i64);
+
+            // compute the expected MAC (if the epoch hour is within the valid range)
+            f1_es.reset();
+            f1_es.update(&buf[..pos + D::MARK_SIZE]);
+            f1_es.update(eh.as_bytes());
+            f1_es.update(SERVER_MAC_ARG);
+            let mac_calculated = &f1_es.finalize_reset().into_bytes()[..D::MAC_SIZE];
+
+            // check received mac
+            let mac_received = &buf[pos + D::MARK_SIZE..pos + D::MARK_SIZE + D::MAC_SIZE];
+            trace!(
+                "server {}-{}",
+                hex::encode(mac_calculated),
+                hex::encode(mac_received)
+            );
+
+            //  and that both x25519 keys contributed (i.e. neither was 0)
+            // let mut okay = computed_mac.ct_eq(&msg_mac)
+            //     & ct::bool_to_choice(xy.was_contributory())
+            //     & ct::bool_to_choice(xb.was_contributory());
+
+            // make sure that the servers mac matches
+            if mac_calculated.ct_eq(mac_received).into() {
+                trace!("correct mac");
+                epoch_hour = eh;
+                mac_found = true;
+
+                // We break here, but if this creates some kind of timing channel
+                // (not sure exactly what that would be) we could reduce timing variance by
+                // just evaluating all three MACs. Probably not necessary
+                break;
+            }
+        }
+
+        if !mac_found {
+            // This could be a [`RelayHandshakeError::TagMismatch`] :shrug:
+            trace!("Matching MAC not found");
+            Err(RelayHandshakeError::BadServerHandshake)?
+        }
+
+        // // TODO: Not sure if this is valid
+        // // server should never send any appended padding at the end.
+        // if buf.len() != pos + MARK_LENGTH + MAC_LENGTH {
+        //     trace!("server sent extra data");
+        //     Err(RelayHandshakeError::BadServerHandshake)?
+        // }
+
+        Ok(ServerHandshakeMessage::<D, ServerStateIncoming>::new(
+            server_auth,
+            ServerStateIncoming {},
+        ))
     }
 }

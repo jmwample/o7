@@ -1,4 +1,4 @@
-use crate::{constants::*, Result};
+use crate::{constants::*, traits::DigestSizes, Digest, Result};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,15 +26,21 @@ pub fn make_hs_pad(pad_len: usize) -> Vec<u8> {
     make_pad(&mut rand::thread_rng(), pad_len)
 }
 
-pub fn find_mac_mark(
-    mark: [u8; MARK_LENGTH],
+pub fn find_mac_mark<D: Digest>(
+    m: impl AsRef<[u8]>,
     buf: impl AsRef<[u8]>,
     start_pos: usize,
     max_pos: usize,
     from_tail: bool,
 ) -> Option<usize> {
+    let mark = m.as_ref();
+    if mark.len() != D::MARK_SIZE {
+        // Bad expected mark provided.
+        return None;
+    }
+
     let buffer = buf.as_ref();
-    if buffer.len() < MARK_LENGTH {
+    if buffer.len() < D::MARK_SIZE {
         return None;
     }
     trace!(
@@ -54,7 +60,7 @@ pub fn find_mac_mark(
         end_pos = max_pos;
     }
 
-    if end_pos - start_pos < MARK_LENGTH + MAC_LENGTH {
+    if end_pos - start_pos < D::MARK_SIZE + D::MAC_SIZE {
         return None;
     }
 
@@ -63,10 +69,10 @@ pub fn find_mac_mark(
         // The server can optimize the search process by only examining the
         // tail of the buffer.  The client can't send valid data past M_C |
         // MAC_C as it does not have the server's public key yet.
-        pos = end_pos - (MARK_LENGTH + MAC_LENGTH);
-        // trace!("{pos}\n{}\n{}", hex::encode(mark), hex::encode(&buffer[pos..pos + MARK_LENGTH]));
+        pos = end_pos - (D::MARK_SIZE + D::MAC_SIZE);
+        // trace!("{pos}\n{}\n{}", hex::encode(mark), hex::encode(&buffer[pos..pos + D::MARK_SIZE]));
         if mark[..]
-            .ct_eq(buffer[pos..pos + MARK_LENGTH].as_ref())
+            .ct_eq(buffer[pos..pos + D::MARK_SIZE].as_ref())
             .into()
         {
             return Some(pos);
@@ -81,11 +87,11 @@ pub fn find_mac_mark(
     // but better algorithms (like `contains` for String) aren't implemented
     // for byte slices in std.
     pos = buffer[start_pos..end_pos]
-        .windows(MARK_LENGTH)
+        .windows(D::MARK_SIZE)
         .position(|window| window.ct_eq(&mark[..]).into())?;
 
     // Ensure that there is enough trailing data for the MAC.
-    if start_pos + pos + MARK_LENGTH + MAC_LENGTH > end_pos {
+    if start_pos + pos + D::MARK_SIZE + D::MAC_SIZE > end_pos {
         return None;
     }
 
@@ -98,6 +104,9 @@ pub fn find_mac_mark(
 mod test {
     use super::*;
     use bytes::Bytes;
+
+    const MARK_LENGTH: usize = <sha3::Sha3_256 as DigestSizes>::MARK_SIZE;
+    const MAC_LENGTH: usize = <sha3::Sha3_256 as DigestSizes>::MAC_SIZE;
 
     struct MacMarkTest {
         mark: [u8; MARK_LENGTH],
@@ -245,7 +254,7 @@ mod test {
         ];
 
         for m in cases {
-            let actual = find_mac_mark(
+            let actual = find_mac_mark::<sha3::Sha3_256>(
                 m.mark,
                 Bytes::from(m.buf),
                 m.start_pos,

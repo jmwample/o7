@@ -8,8 +8,10 @@
 use crate::{common::ntor_arti::ClientHandshakeComplete, Digest};
 
 use cipher::{KeyIvInit as _, StreamCipher as _};
-use digest::{Digest as _, ExtendableOutput as _, OutputSizeUser, XofReader as _};
-use generic_array::{ArrayLength, GenericArray};
+use digest::{
+    generic_array::{ArrayLength, GenericArray},
+    Digest as _, ExtendableOutput as _, OutputSizeUser, XofReader as _,
+};
 use kemeleon::{Encode, OKemCore};
 use tor_bytes::{EncodeResult, Writeable, Writer};
 use tor_llcrypto::cipher::aes::Aes256Ctr;
@@ -73,7 +75,7 @@ type HmacOutput<D> = digest::generic_array::GenericArray<u8, <D as OutputSizeUse
 pub(crate) type Authcode<D> = HmacOutput<D>;
 
 /// A key for symmetric encryption and decryption.
-pub(crate) type SessionSharedSecret<D: Digest> = Zeroizing<HmacOutput<D>>;
+pub(crate) type SessionSharedSecret<D> = Zeroizing<HmacOutput<D>>;
 
 /// Secret derived using an HMAC, used as the intermediary secret during a handshake.
 pub(crate) type HandshakeEphemeralSecret<D> = Zeroizing<HmacOutput<D>>;
@@ -175,7 +177,7 @@ pub(crate) fn encrypt<D: Digest>(key: &SessionSharedSecret<D>, m: &[u8]) -> Vec<
 pub(crate) fn decrypt<D: Digest>(key: &SessionSharedSecret<D>, m: &[u8]) -> Vec<u8>
 where
     generic_array::GenericArray<u8, <D as OutputSizeUser>::OutputSize>: Zeroize,
-    <D as OutputSizeUser>::OutputSize: generic_array::ArrayLength,
+    <D as OutputSizeUser>::OutputSize: ArrayLength<u8>,
 {
     encrypt::<D>(key, m)
 }
