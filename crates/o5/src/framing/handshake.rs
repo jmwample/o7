@@ -3,7 +3,8 @@ use crate::{
     constants::*,
     framing::FrameError,
     handshake::{
-        encrypt, Authcode, CHSMaterials, EphemeralPub, HandshakeEphemeralSecret, SHSMaterials,
+        encrypt, Authcode, CHSMaterials, EphemeralPub, HandshakeEphemeralSecret,
+        NtorV3Client as Client, SHSMaterials,
     },
     Digest, Result,
 };
@@ -319,7 +320,7 @@ where
         let encrypted_msg = encrypt::<D>(&ephemeral_secret, &message);
 
         // Generate the padding
-        let pad_len = rng.gen_range(MIN_HANDSHAKE_PAD_LENGTH..Self::CLIENT_MAX_PAD_LENGTH); // TODO - recalculate these
+        let pad_len = rng.gen_range(MIN_PAD_LENGTH..Client::<K, D>::CLIENT_MAX_PAD_LENGTH); // TODO - recalculate these
         let pad = make_pad(rng, pad_len);
 
         // Write EKco, CTco, MSG, P_C, M_C

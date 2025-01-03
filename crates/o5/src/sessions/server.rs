@@ -191,7 +191,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         let session_id = materials.session_id.clone();
 
         // wait for and attempt to consume the client hello message
-        let mut buf = [0_u8; MAX_HANDSHAKE_LENGTH];
+        let mut buf = [0_u8; MAX_PACKET_LENGTH];
         loop {
             let n = stream.read(&mut buf).await?;
             if n == 0 {

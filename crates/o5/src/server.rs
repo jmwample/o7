@@ -12,6 +12,7 @@ use crate::{
     handshake::{IdentityPublicKey, IdentitySecretKey},
     proto::{MaybeTimeout, O5Stream},
     sessions::{Initialized, ServerSession, Session},
+    traits::{DigestSizes, FramingSizes},
     transport_name, type_name, Digest, Error, Result,
 };
 
@@ -234,6 +235,13 @@ impl<K: OKemCore, D: Digest> Deref for Server<K, D> {
 }
 
 impl<K: OKemCore, D: Digest> Server<K, D> {
+    pub(crate) const CT_SIZE: usize = K::CT_SIZE;
+    pub(crate) const EK_SIZE: usize = K::EK_SIZE;
+    pub(crate) const AUTH_SIZE: usize = D::AUTH_SIZE;
+    pub const SERVER_MIN_HANDSHAKE_LENGTH: usize =
+        K::CT_SIZE + D::AUTH_SIZE + D::MARK_SIZE + D::MAC_SIZE;
+    pub const SERVER_MAX_PAD_LENGTH: usize = MAX_PACKET_LENGTH - Self::SERVER_MIN_HANDSHAKE_LENGTH;
+
     pub fn new(identity: IdentitySecretKey<K>) -> Self {
         Self::new_from_key(identity)
     }

@@ -236,7 +236,7 @@ impl<K: OKemCore> ClientSession<Initialized, K> {
             chs_message.len()
         );
 
-        let mut buf = [0u8; MAX_HANDSHAKE_LENGTH];
+        let mut buf = [0u8; MAX_PACKET_LENGTH];
         loop {
             let n = stream.read(&mut buf).await?;
             if n == 0 {

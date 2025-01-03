@@ -75,7 +75,6 @@ impl<K: OKemCore, D: Digest> HandshakeState<K, D> {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct HandshakeMaterials<K: OKemCore> {
     pub(crate) node_pubkey: IdentityPublicKey<K>,
-    pub(crate) pad_len: usize,
     pub(crate) session_id: String,
     pub(crate) aux_data: Vec<NtorV3Extension>,
 }
@@ -85,7 +84,6 @@ impl<K: OKemCore> HandshakeMaterials<K> {
         HandshakeMaterials {
             node_pubkey: node_pubkey.clone(),
             session_id,
-            pad_len: rand::thread_rng().gen_range(MIN_HANDSHAKE_PAD_LENGTH..CLIENT_MAX_PAD_LENGTH),
             aux_data: vec![],
         }
     }
@@ -183,8 +181,7 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
     const AUTH_SIZE: usize = D::AUTH_SIZE;
     pub const CLIENT_MIN_HANDSHAKE_LENGTH: usize =
         K::EK_SIZE + K::CT_SIZE + D::MARK_SIZE + D::MAC_SIZE;
-    pub const CLIENT_MAX_PAD_LENGTH: usize =
-        MAX_HANDSHAKE_LENGTH - Self::CLIENT_MIN_HANDSHAKE_LENGTH;
+    pub const CLIENT_MAX_PAD_LENGTH: usize = MAX_PACKET_LENGTH - Self::CLIENT_MIN_HANDSHAKE_LENGTH;
 
     /// Client-side Ntor version 3 handshake, part one.
     ///
@@ -216,7 +213,7 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
 
         // ------------ [ Perform Handshake and Serialize Packet ] ------------ //
 
-        let mut buf = BytesMut::with_capacity(MAX_HANDSHAKE_LENGTH);
+        let mut buf = BytesMut::with_capacity(MAX_PACKET_LENGTH);
         let ephemeral_secret = client_msg.marshall::<D>(rng, &mut buf)?;
 
         let state = HandshakeState {
@@ -373,20 +370,15 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
             hex::encode(server_mark)
         );
 
-        let min_position = Self::CT_SIZE + Server::<K, D>::SERVER_MIN_PAD_LENGTH;
+        let min_position = Server::<K, D>::SERVER_MIN_HANDSHAKE_LENGTH;
 
         // find mark + mac position
-        let pos = match find_mac_mark(
-            server_mark.into(),
-            buf,
-            min_position,
-            MAX_HANDSHAKE_LENGTH,
-            true,
-        ) {
+        let pos = match find_mac_mark::<D>(server_mark, buf, min_position, MAX_PACKET_LENGTH, true)
+        {
             Some(p) => p,
             None => {
                 trace!("{} didn't find mark", state.materials.session_id);
-                if buf.len() > MAX_HANDSHAKE_LENGTH {
+                if buf.len() > MAX_PACKET_LENGTH {
                     Err(RelayHandshakeError::BadServerHandshake)?
                 }
                 Err(RelayHandshakeError::EAgain)?

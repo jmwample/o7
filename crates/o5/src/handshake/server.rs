@@ -18,7 +18,6 @@ use crate::{
 
 use std::time::Instant;
 
-// use cipher::KeyIvInit;
 use digest::{Digest as _, ExtendableOutput as _, XofReader as _};
 use hmac::{Mac, SimpleHmac};
 use kem::{Decapsulate, Encapsulate};
@@ -80,14 +79,6 @@ impl<K: OKemCore, D: Digest> ServerHandshake for Server<K, D> {
 }
 
 impl<K: OKemCore, D: Digest> Server<K, D> {
-    const CT_SIZE: usize = K::CT_SIZE;
-    const EK_SIZE: usize = K::EK_SIZE;
-    const AUTH_SIZE: usize = D::AUTH_SIZE;
-    pub const SERVER_MIN_HANDSHAKE_LENGTH: usize =
-        K::CT_SIZE + D::AUTH_SIZE + D::MARK_SIZE + D::MAC_SIZE;
-    pub const SERVER_MAX_PAD_LENGTH: usize =
-        MAX_HANDSHAKE_LENGTH - Self::SERVER_MIN_HANDSHAKE_LENGTH;
-
     /// Complete an ntor v3 handshake as a server.
     ///
     ///    shared_secret_1 = Decapsulate(DKs, ct)
@@ -208,7 +199,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             .unwrap_or_default();
         let encrypted_extension_reply = &encrypt::<D>(&session_key, &extensions_reply);
 
-        let pad_len = rng.gen_range(MIN_HANDSHAKE_PAD_LENGTH..Self::SERVER_MAX_PAD_LENGTH); // TODO - recalculate these
+        let pad_len = rng.gen_range(MIN_PAD_LENGTH..Self::SERVER_MAX_PAD_LENGTH); // TODO - recalculate these
 
         let state_outgoing = ServerStateOutgoing::<D> {
             pad_len,
@@ -298,20 +289,20 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             hex::encode(client_mark)
         );
 
-        let min_position = Self::CT_SIZE + Self::EK_SIZE + MIN_HANDSHAKE_PAD_LENGTH;
+        let min_position = Self::CT_SIZE + Self::EK_SIZE + MIN_PAD_LENGTH;
 
         // find mark + mac position
-        let pos =
-            match find_mac_mark::<D>(client_mark, buf, min_position, MAX_HANDSHAKE_LENGTH, true) {
-                Some(p) => p,
-                None => {
-                    trace!("{} didn't find mark", materials.session_id);
-                    if buf.len() > MAX_HANDSHAKE_LENGTH {
-                        Err(RelayHandshakeError::BadClientHandshake)?
-                    }
-                    Err(RelayHandshakeError::EAgain)?
+        let pos = match find_mac_mark::<D>(client_mark, buf, min_position, MAX_PACKET_LENGTH, true)
+        {
+            Some(p) => p,
+            None => {
+                trace!("{} didn't find mark", materials.session_id);
+                if buf.len() > MAX_PACKET_LENGTH {
+                    Err(RelayHandshakeError::BadClientHandshake)?
                 }
-            };
+                Err(RelayHandshakeError::EAgain)?
+            }
+        };
 
         // validate he MAC
         let mut mac_found = false;
