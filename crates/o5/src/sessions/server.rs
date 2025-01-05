@@ -16,6 +16,7 @@ use crate::{
 
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
+use bytes::BytesMut;
 use kemeleon::OKemCore;
 use ptrs::{debug, info, trace};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -200,8 +201,9 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             }
             trace!("{} successful read {n}B", session_id);
 
-            match self.server(reply_fn, &materials, &buf[..n]) {
-                Ok((keygen, response)) => {
+            let mut response = BytesMut::new();
+            match self.server(reply_fn, materials, &buf[..n], &mut response) {
+                Ok(keygen) => {
                     stream.write_all(&response).await?;
                     info!("{} handshake complete", session_id);
                     return Ok(keygen);

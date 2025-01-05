@@ -29,37 +29,41 @@ use core::marker::PhantomData;
 pub trait ShsState {}
 
 /// Used by the client when parsing the handshake sent by the server.
-pub struct ServerHandshakeMessage<D: Digest, S: ShsState> {
+pub struct ServerHandshakeMessage<K:OKemCore, D: Digest, S: ShsState> {
+    server_ciphertext: K::Ciphertext,
     server_auth: Authcode<D>,
     state: S,
     _digest: PhantomData<D>,
 }
 
 /// State tracked when constructing and sending an outgoing server handshake
-pub struct ServerStateOutgoing<'a, D: Digest> {
+pub struct ServerStateOutgoing<D: Digest> {
     pub(crate) pad_len: usize,
-    pub(crate) epoch_hour: String,
+    // pub(crate) epoch_hour: String, // I don't think this needs stored by the server on send
+    /// Ciphertext created as part of the KEM handshake where the server uses the encapsulation key
+    /// sent by the client in the client hallo message to share a session shared secret.
     pub(crate) ephemeral_secret: HandshakeEphemeralSecret<D>,
-    pub(crate) hs_materials: &'a SHSMaterials,
-    pub(crate) encrypted_extension_reply: &'a [u8],
+    pub(crate) hs_materials: SHSMaterials,
+    pub(crate) encrypted_extension_reply: Vec<u8>,
 }
-impl<'a, D: Digest> ShsState for ServerStateOutgoing<'a, D> {}
+impl<'a, D: Digest> ShsState for ServerStateOutgoing<D> {}
 
 /// State tracked when parsing and operating on an incoming server handshake
 pub struct ServerStateIncoming {}
 impl ShsState for ServerStateIncoming {}
 
-impl<'a, D: Digest, S: ShsState> ServerHandshakeMessage<D, S> {
-    pub fn new(auth: Authcode<D>, state: S) -> Self {
+impl<'a, D: Digest, K:OKemCore, S: ShsState> ServerHandshakeMessage<K, D, S> {
+    pub fn new(server_ciphertext: K::Ciphertext, server_auth: Authcode<D>, state: S) -> Self {
         Self {
-            server_auth: auth,
+            server_ciphertext,
+            server_auth,
             state,
             _digest: PhantomData,
         }
     }
 }
 
-impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a, D>> {
+impl<'a, D: Digest, K: OKemCore> ServerHandshakeMessage<K, D, ServerStateOutgoing<D>> {
     /// Serialize the Server Hello Message
     ///
     /// Given a properly processed client handshake, the Server handshake is then constructed as:
@@ -79,10 +83,9 @@ impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a, D>> {
     ///     Ps    N ∈ [serverMinPadLength,serverMaxPadLength] bytes of random padding.
     ///     E     string representation of the number of hours since the UNIX epoch
     pub fn marshall(
-        &mut self,
+        &self,
         rng: &mut impl CryptoRngCore,
         buf: &mut impl BufMut,
-        ciphertext: impl AsRef<[u8]>,
     ) -> Result<()> {
         // -------------------------------- [ ST-PQ-OBFS ] -------------------------------- //
         // Security Theoretic, KEM, Obfuscated Key exchange
@@ -91,6 +94,8 @@ impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a, D>> {
 
         let ephemeral_secret = &self.state.ephemeral_secret;
 
+        let ciphertext = &self.server_ciphertext;
+
         // set up our hash fn
         let mut f1_es = SimpleHmac::<D>::new_from_slice(ephemeral_secret.as_ref())
             .expect("keying hmac should never fail");
@@ -98,7 +103,7 @@ impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a, D>> {
         // compute the Mark
         let mark = {
             f1_es.reset();
-            f1_es.update(ciphertext.as_ref());
+            f1_es.update(&ciphertext.as_bytes());
             f1_es.update(SERVER_MARK_ARG);
             f1_es.finalize_reset().into_bytes()
         };
@@ -110,7 +115,7 @@ impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a, D>> {
         let hello_msg = {
             let mut hello_msg = Vec::new();
             hello_msg
-                .write(ciphertext.as_ref())
+                .write(&ciphertext.as_bytes()[..])
                 .and_then(|_| hello_msg.write(&self.server_auth[..]))
                 .and_then(|_| hello_msg.write(&self.state.encrypted_extension_reply))
                 .and_then(|_| hello_msg.write(&pad))
@@ -126,8 +131,7 @@ impl<'a, D: Digest> ServerHandshakeMessage<D, ServerStateOutgoing<'a, D>> {
         let mac = {
             f1_es.reset();
             f1_es.update(&hello_msg);
-            self.state.epoch_hour = format!("{}", get_epoch_hour());
-            f1_es.update(self.state.epoch_hour.as_bytes());
+            f1_es.update(get_epoch_hour().to_string().as_bytes());
             f1_es.update(SERVER_MAC_ARG);
             f1_es.finalize_reset().into_bytes()
         };
@@ -320,7 +324,7 @@ where
         let encrypted_msg = encrypt::<D>(&ephemeral_secret, &message);
 
         // Generate the padding
-        let pad_len = rng.gen_range(MIN_PAD_LENGTH..Client::<K, D>::CLIENT_MAX_PAD_LENGTH); // TODO - recalculate these
+        let pad_len = rng.gen_range(MIN_PAD_LENGTH .. Client::<K, D>::CLIENT_MAX_PAD_LENGTH); // TODO - recalculate these
         let pad = make_pad(rng, pad_len);
 
         // Write EKco, CTco, MSG, P_C, M_C

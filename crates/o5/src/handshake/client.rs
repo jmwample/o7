@@ -26,7 +26,7 @@ use digest::CtOutput;
 use hmac::{Mac, SimpleHmac};
 use kem::{Decapsulate, Encapsulate};
 use kemeleon::{Encode, OKemCore};
-use ptrs::trace;
+use ptrs::{debug, trace};
 use rand::{CryptoRng, Rng, RngCore};
 use rand_core::CryptoRngCore;
 use subtle::ConstantTimeEq;
@@ -161,7 +161,7 @@ impl<K: OKemCore, D: Digest> ClientHandshake for NtorV3Client<K, D> {
     /// The state object must match the one that was used to make the
     /// client onionskin that the server is replying to.
     fn client2<T: AsRef<[u8]>>(state: &mut Self::StateType, msg: T) -> Result<Self::HsOutput> {
-        let (message, xof_reader) = Self::client_handshake_ntor_v3_part2(state, msg.as_ref())?;
+        let (message, xof_reader) = Self::client_handshake_ntor_v3_part2(msg, state)?;
         let extensions = NtorV3Extension::decode(&message).map_err(|err| Error::CellDecodeErr {
             object: "ntor v3 extensions",
             err,
@@ -234,9 +234,34 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
     /// On success, return the server's reply to our original encrypted message,
     /// and an `XofReader` to use in generating circuit keys.
     pub(crate) fn client_handshake_ntor_v3_part2(
+        relay_handshake: impl AsRef<[u8]>,
         state: &HandshakeState<K, D>,
-        relay_handshake: &[u8],
-    ) -> Result<(Vec<u8>, NtorV3XofReader)> {
+    ) ->  RelayHandshakeResult<(Vec<u8>, NtorV3XofReader)> {
+        let msg = relay_handshake.as_ref();
+        if Server::<K,D>::SERVER_MIN_HANDSHAKE_LENGTH > msg.len() {
+            Err(RelayHandshakeError::EAgain)?;
+        }
+
+        let mut server_hs = match Self::try_parse_server_handshake(msg, state) {
+            Ok(shs) => shs,
+            Err(RelayHandshakeError::EAgain) => {
+                return Err(RelayHandshakeError::EAgain);
+            }
+            Err(_e) => {
+                debug!(
+                    "{} failed to parse server handshake: {_e}",
+                    state.materials.session_id
+                );
+                return Err(RelayHandshakeError::BadClientHandshake);
+            }
+        };
+
+        debug!(
+            "{} successfully parsed server handshake",
+            state.materials.session_id
+        );
+
+
         todo!("client handshake part 2");
 
         // let mut reader = Reader::from_slice(relay_handshake);
@@ -312,10 +337,9 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
 
 impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
     fn try_parse_server_handshake(
-        &self,
         b: impl AsRef<[u8]>,
         state: &HandshakeState<K, D>,
-    ) -> RelayHandshakeResult<ServerHandshakeMessage<D, ServerStateIncoming>> {
+    ) -> RelayHandshakeResult<ServerHandshakeMessage<K, D, ServerStateIncoming>> {
         let buf = b.as_ref();
 
         if Server::<K, D>::SERVER_MIN_HANDSHAKE_LENGTH > buf.len() {
@@ -439,7 +463,8 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
         //     Err(RelayHandshakeError::BadServerHandshake)?
         // }
 
-        Ok(ServerHandshakeMessage::<D, ServerStateIncoming>::new(
+        Ok(ServerHandshakeMessage::<K, D, ServerStateIncoming>::new(
+            server_ct,
             server_auth,
             ServerStateIncoming {},
         ))

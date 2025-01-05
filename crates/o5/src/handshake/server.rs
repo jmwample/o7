@@ -18,7 +18,8 @@ use crate::{
 
 use std::time::Instant;
 
-use digest::{Digest as _, ExtendableOutput as _, XofReader as _};
+use bytes::BufMut;
+use digest::{Digest as _, ExtendableOutput as _};
 use hmac::{Mac, SimpleHmac};
 use kem::{Decapsulate, Encapsulate};
 use kemeleon::OKemCore;
@@ -26,17 +27,17 @@ use keys::NtorV3KeyGenerator;
 use ptrs::{debug, trace};
 use rand::Rng;
 use rand_core::{CryptoRng, CryptoRngCore, RngCore};
-use sha2::Sha256;
+use sha3::Shake256;
 use subtle::ConstantTimeEq;
 use tor_bytes::{Reader, SecretBuf, Writer};
 use tor_cell::relaycell::extend::NtorV3Extension;
 use tor_error::into_internal;
-use tor_llcrypto::d::{Sha3_256, Shake256};
 use tor_llcrypto::pk::ed25519::Ed25519Identity;
 use typenum::Unsigned;
 use zeroize::Zeroizing;
 
 /// Server Materials needed for completing a handshake
+#[derive(Clone, Debug)]
 pub(crate) struct HandshakeMaterials {
     pub(crate) session_id: String,
     pub(crate) len_seed: [u8; SEED_LENGTH],
@@ -57,12 +58,12 @@ impl<K: OKemCore, D: Digest> ServerHandshake for Server<K, D> {
     type ClientAuxData = [NtorV3Extension];
     type ServerAuxData = Vec<NtorV3Extension>;
 
-    fn server<REPLY: AuxDataReply<Self>, T: AsRef<[u8]>>(
+    fn server<REPLY: AuxDataReply<Self>, T: AsRef<[u8]>, Out: BufMut>(
         &self,
         reply_fn: &mut REPLY,
-        materials: &Self::HandshakeParams, // TODO: do we need materials during server handshake?
         msg: T,
-    ) -> RelayHandshakeResult<(Self::KeyGen, Vec<u8>)> {
+        reply_buf: &mut Out,
+    ) -> RelayHandshakeResult<Self::KeyGen> {
         let mut bytes_reply_fn = |bytes: &[u8]| -> Option<Vec<u8>> {
             let client_exts = NtorV3Extension::decode(bytes).ok()?;
             let reply_exts = reply_fn.reply(&client_exts)?;
@@ -72,9 +73,23 @@ impl<K: OKemCore, D: Digest> ServerHandshake for Server<K, D> {
         };
         let mut rng = rand::thread_rng();
 
-        let (res, reader) =
+        let (response, reader) =
             self.server_handshake_ntor_v3(&mut rng, &mut bytes_reply_fn, msg.as_ref(), materials)?;
-        Ok((NtorV3KeyGenerator::new::<ServerRole>(reader), res))
+
+        response.marshall(&mut rng, reply_buf);
+
+        Ok(NtorV3KeyGenerator::new::<ServerRole>(reader))
+    }
+}
+
+pub(crate) struct O5ServerHandshake<K:OkemCore, D: Digest> {
+    materials: HandshakeMaterials,
+    server: Server<K,D>,
+}
+
+impl<K:OKemCore, D: Digest> O5ServerHandshake<K,D> {
+    pub(crate) fn with_context(&mut self, HandshakeMaterials) -> &Self {
+        self
     }
 }
 
@@ -93,30 +108,36 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
     ///    SESSION_KEY = F1(FS, context | PROTOID | ":key_extract")
     ///
     /// On success, return the server handshake message to send, and the session keys
-    pub(crate) fn server_handshake_ntor_v3(
+    pub(crate) fn server_handshake_ntor_v3<'a>(
         &self,
         rng: &mut impl CryptoRngCore,
         reply_fn: &mut impl MsgReply,
-        message: impl AsRef<[u8]>,
-        materials: &HandshakeMaterials,
-    ) -> RelayHandshakeResult<(Vec<u8>, NtorV3XofReader)> {
+        message: &'a [u8],
+        materials: <Self as ServerHandshake>::HandshakeParams,
+    ) -> RelayHandshakeResult<(
+        ServerHandshakeMessage<K, D, ServerStateOutgoing<D>>,
+        NtorV3XofReader,
+    )> {
         self.server_handshake_ntor_v3_no_keygen(rng, reply_fn, message, materials)
     }
 
     /// As `server_handshake_ntor_v3`, but take a secret key instead of an RNG.
-    pub(crate) fn server_handshake_ntor_v3_no_keygen(
+    pub(crate) fn server_handshake_ntor_v3_no_keygen<'a>(
         &self,
         rng: &mut impl CryptoRngCore,
         extension_handle: &mut impl MsgReply,
-        message: impl AsRef<[u8]>,
-        materials: &HandshakeMaterials,
-    ) -> RelayHandshakeResult<(Vec<u8>, NtorV3XofReader)> {
-        let msg = message.as_ref();
+        msg: &'a [u8],
+        materials: HandshakeMaterials,
+    ) -> RelayHandshakeResult<(
+        ServerHandshakeMessage<K, D, ServerStateOutgoing<D>>,
+        NtorV3XofReader,
+    )> {
+        // let msg = message.as_ref();
         if Client::<K, D>::CLIENT_MIN_HANDSHAKE_LENGTH > msg.len() {
             Err(RelayHandshakeError::EAgain)?;
         }
 
-        let mut client_hs = match self.try_parse_client_handshake(msg, materials) {
+        let mut client_hs = match self.try_parse_client_handshake(msg, &materials) {
             Ok(chs) => chs,
             Err(RelayHandshakeError::EAgain) => {
                 return Err(RelayHandshakeError::EAgain);
@@ -165,9 +186,10 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         // Handshake context = EKco || CTco || EKso || CTso || protocol_id
         let mut context = {
             let mut c = SecretBuf::new();
-            c.write(&client_session_ek.as_bytes()[..])
-                .and_then(|_| c.write(&message.as_ref()[..])) // TODO: We need less than the whole message
-                .and_then(|_| c.write(Self::protocol_id()))
+            c.write(&msg[K::EK_SIZE .. K::EK_SIZE + K::CT_SIZE]) // EKco || CTco from client handshake
+                .and_then(|_| c.write(&self.get_identity().ek.as_bytes()[..])) // EKso server identity key
+                .and_then(|_| c.write(&ciphertext.as_bytes()[..])) // CTso server created ciphertext
+                .and_then(|_| c.write(Self::protocol_id())) // protocol ID
                 .map_err(|_| {
                     RelayHandshakeError::FrameError("failed to wire reply context".into())
                 })?;
@@ -193,38 +215,39 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             f1_fs.finalize_reset().into_bytes()
         };
 
+        let (enc_key, keystream) = {
+            use digest::{ExtendableOutput, Update, XofReader};
+            let mut xof = Shake256::default();
+            xof.update(&T_FINAL);
+            xof.update(&session_key);
+            let mut r = xof.finalize_xof();
+            let mut enc_key = SessionSharedSecret::<D>::default();
+            r.read(&mut enc_key[..]);
+            (enc_key, r)
+        };
+
         // Handle extension messages and (optionally) craft a reply.
         let extensions_reply = extension_handle
             .reply(&client_hs.get_extensions())
             .unwrap_or_default();
-        let encrypted_extension_reply = &encrypt::<D>(&session_key, &extensions_reply);
 
         let pad_len = rng.gen_range(MIN_PAD_LENGTH..Self::SERVER_MAX_PAD_LENGTH); // TODO - recalculate these
 
         let state_outgoing = ServerStateOutgoing::<D> {
             pad_len,
-            epoch_hour: get_epoch_hour().to_string(),
             hs_materials: materials,
-            encrypted_extension_reply,
+            encrypted_extension_reply: encrypt::<D>(&enc_key, &extensions_reply),
             ephemeral_secret,
         };
         let server_hs_msg =
-            ServerHandshakeMessage::<D, ServerStateOutgoing<D>>::new(auth, state_outgoing);
+            ServerHandshakeMessage::<K, D, ServerStateOutgoing<D>>::new(ciphertext, auth, state_outgoing);
 
-        // okay &= ct::bool_to_choice(reply.is_some());
-        // let reply = reply.unwrap_or_default();
+        Ok((server_hs_msg, NtorV3XofReader::new(keystream)))
 
-        // // If we reach this point, we are actually replying, or pretending
-        // // that we're going to reply.
-
-        // if okay.into() {
-        //     Ok((reply, NtorV3XofReader::new(keystream)))
-        // } else {
-        //     Err(RelayHandshakeError::BadClientHandshake)
-        // }
-        todo!("construct & send server handshake");
+        // todo!("construct & send server handshake");
     }
 
+    // TODO: what is the purpose of this in obfs4?
     pub(crate) fn complete_server_hs(
         &self,
         client_hs: &ClientHandshakeMessage<K, ClientStateIncoming<D>>,

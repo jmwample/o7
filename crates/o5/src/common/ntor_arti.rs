@@ -14,6 +14,7 @@ use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
 use crate::{common::colorize, Error, Result};
 
+use bytes::BufMut;
 use tor_bytes::SecretBuf;
 
 pub const SESSION_ID_LEN: usize = 8;
@@ -142,12 +143,13 @@ pub(crate) trait ServerHandshake {
     ///
     /// The self parameter is a type / struct for (potentially shared) state
     /// accessible during the server handshake.
-    fn server<REPLY: AuxDataReply<Self>, T: AsRef<[u8]>>(
+    fn server<REPLY: AuxDataReply<Self>, T: AsRef<[u8]>, Out:BufMut>(
         &self,
         reply_fn: &mut REPLY,
-        materials: &Self::HandshakeParams,
+        materials: Self::HandshakeParams,
         msg: T,
-    ) -> RelayHandshakeResult<(Self::KeyGen, Vec<u8>)>;
+        reply_buf: &mut Out,
+    ) -> RelayHandshakeResult<Self::KeyGen>;
 }
 
 /// A KeyGenerator is returned by a handshake, and used to generate

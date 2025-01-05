@@ -80,29 +80,29 @@ pub(crate) type SessionSharedSecret<D> = Zeroizing<HmacOutput<D>>;
 /// Secret derived using an HMAC, used as the intermediary secret during a handshake.
 pub(crate) type HandshakeEphemeralSecret<D> = Zeroizing<HmacOutput<D>>;
 
-/// An encapsulated value for passing as input to a MAC, digest, or
-/// KDF algorithm.
-///
-/// This corresponds to the ENCAP() function in proposal 332.
-struct Encap<'a>(&'a [u8]);
+// /// An encapsulated value for passing as input to a MAC, digest, or
+// /// KDF algorithm.
+// ///
+// /// This corresponds to the ENCAP() function in proposal 332.
+// struct Encap<'a>(&'a [u8]);
 
-impl Writeable for Encap<'_> {
-    fn write_onto<B: Writer + ?Sized>(&self, b: &mut B) -> EncodeResult<()> {
-        b.write_u64(self.0.len() as u64);
-        b.write(self.0)
-    }
-}
+// impl Writeable for Encap<'_> {
+//     fn write_onto<B: Writer + ?Sized>(&self, b: &mut B) -> EncodeResult<()> {
+//         b.write_u64(self.0.len() as u64);
+//         b.write(self.0)
+//     }
+// }
 
-impl<'a> Encap<'a> {
-    /// Return the length of the underlying data in bytes.
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-    /// Return the underlying data
-    fn data(&self) -> &'a [u8] {
-        self.0
-    }
-}
+// impl<'a> Encap<'a> {
+//     /// Return the length of the underlying data in bytes.
+//     fn len(&self) -> usize {
+//         self.0.len()
+//     }
+//     /// Return the underlying data
+//     fn data(&self) -> &'a [u8] {
+//         self.0
+//     }
+// }
 
 /// Helper to define a set of tweak values as instances of `Encap`.
 macro_rules! define_tweaks {
@@ -115,13 +115,12 @@ macro_rules! define_tweaks {
         const PROTOID: &'static [u8] = $protoid.as_bytes();
         $(
             $(#[$meta])*
-            const $name : Encap<'static> =
-                Encap(concat!($protoid, ":", $suffix).as_bytes());
+            const $name: &[u8] = concat!($protoid, ":", $suffix).as_bytes();
         )*
     }
 }
 
-pub(crate) const T_KEY: &[u8; 36] = b"ntor-curve25519-sha256-1:key_extract";
+pub(crate) const T_KEY: &[u8] = b"ntor-curve25519-sha256-1:key_extract";
 
 define_tweaks! {
     /// Protocol ID: concatenated with other things in the protocol to
@@ -150,14 +149,14 @@ define_tweaks! {
     M_EXPAND <= "key_expand";
 }
 
-/// Compute a tweaked hash.
-fn hash(t: &Encap<'_>, data: &[u8]) -> DigestVal {
-    let mut d = Sha3_256::new();
-    d.update((t.len() as u64).to_be_bytes());
-    d.update(t.data());
-    d.update(data);
-    d.finalize().into()
-}
+// /// Compute a tweaked hash.
+// fn hash(t: &Encap<'_>, data: &[u8]) -> DigestVal {
+//     let mut d = Sha3_256::new();
+//     d.update((t.len() as u64).to_be_bytes());
+//     d.update(t.data());
+//     d.update(data);
+//     d.finalize().into()
+// }
 
 /// Perform a symmetric encryption operation and return the encrypted data.
 ///
@@ -182,14 +181,14 @@ where
     encrypt::<D>(key, m)
 }
 
-/// Hash tweaked with T_KEY_SEED
-fn h_key_seed(d: &[u8]) -> DigestVal {
-    hash(&T_KEY_SEED, d)
-}
-/// Hash tweaked with T_VERIFY
-fn h_verify(d: &[u8]) -> DigestVal {
-    hash(&T_VERIFY, d)
-}
+// /// Hash tweaked with T_KEY_SEED
+// fn h_key_seed(d: &[u8]) -> DigestVal {
+//     hash(&T_KEY_SEED, d)
+// }
+// /// Hash tweaked with T_VERIFY
+// fn h_verify(d: &[u8]) -> DigestVal {
+//     hash(&T_VERIFY, d)
+// }
 
 /// Trait for an object that handle and incoming client message and
 /// return a server's reply.
@@ -240,6 +239,7 @@ mod test {
     use crate::handshake::IdentitySecretKey;
     use crate::test_utils::test_keys::KEYS;
 
+    use bytes::BytesMut;
     use hex::FromHex;
     use hex_literal::hex;
     use kemeleon::{MlKem768, OKemCore};
@@ -276,11 +276,14 @@ mod test {
         let server = Server::<MlKem768, Sha3_256>::new(relay_private);
         let shs_materials = SHSMaterials::new("test_server_000".into(), [0u8; SEED_LENGTH]);
         let (s_handshake, mut s_keygen) = server
-            .server_handshake_ntor_v3(&mut rng, &mut rep, &c_handshake, &shs_materials)
+            .server_handshake_ntor_v3(&mut rng, &mut rep, &c_handshake, shs_materials)
             .unwrap();
 
+        let mut shs_msg = BytesMut::new();
+        s_handshake.marshall(&mut rng, &mut shs_msg).expect("failed to serialize server handshake");
+
         let (s_msg, mut c_keygen) =
-            O5Client::client_handshake_ntor_v3_part2(&c_state, &s_handshake).unwrap();
+            O5Client::client_handshake_ntor_v3_part2(&shs_msg, &c_state).unwrap();
 
         assert_eq!(rep.0[..], client_message[..]);
         assert_eq!(s_msg[..], relay_message[..]);
@@ -307,8 +310,10 @@ mod test {
             len_seed: [0u8; SEED_LENGTH],
             session_id: "roundtrip_test_serverside".into(),
         };
-        let (s_keygen, s_handshake) = server
-            .server(&mut rep, &shs_materials, &c_handshake)
+
+        let mut s_handshake = BytesMut::new();
+        let s_keygen = server
+            .server(&mut rep, shs_materials, &c_handshake, &mut s_handshake)
             .unwrap();
 
         let hs_complete = NtorV3Client::client2(&mut c_state, s_handshake).unwrap();
@@ -344,8 +349,9 @@ mod test {
             session_id: "roundtrip_test_serverside".into(),
         };
         let server = Server::<MlKem768, Sha3_256>::new_from_random(&mut thread_rng());
-        let (s_keygen, s_handshake) = server
-            .server(&mut rep, &shs_materials, &c_handshake)
+        let mut s_handshake = BytesMut::new();
+        let s_keygen = server
+            .server(&mut rep, shs_materials, &c_handshake, &mut s_handshake)
             .unwrap();
 
         let hs_complete = NtorV3Client::client2(&mut c_state, s_handshake).unwrap();
@@ -392,7 +398,7 @@ mod test {
             }
         }
         let mut rep = Replier(client_message.to_vec(), server_message.to_vec(), false);
-        let materials = &SHSMaterials {
+        let materials = SHSMaterials {
             session_id: "testing".into(),
             len_seed: [0u8; SEED_LENGTH],
         };
@@ -403,10 +409,15 @@ mod test {
             .unwrap();
         assert!(rep.2);
 
-        assert_eq!(server_handshake[..], hex!("4bf4814326fdab45ad5184f5518bd7fae25dc59374062698201a50a22954246d2fc5f8773ca824542bc6cf6f57c7c29bbf4e5476461ab130c5b18ab0a91276651202c3e1e87c0d32054c")[..]);
+
+        let mut shs_msg = BytesMut::new();
+        server_handshake.marshall(&mut rng, &mut shs_msg).expect("failed to serialize server handshake");
+
+        // This will fail
+        assert_eq!(shs_msg[..], hex!("4bf4814326fdab45ad5184f5518bd7fae25dc59374062698201a50a22954246d2fc5f8773ca824542bc6cf6f57c7c29bbf4e5476461ab130c5b18ab0a91276651202c3e1e87c0d32054c")[..]);
 
         let (server_msg_received, mut client_keygen) =
-            O5Client::client_handshake_ntor_v3_part2(&state, &server_handshake).unwrap();
+            O5Client::client_handshake_ntor_v3_part2(&shs_msg, &state).unwrap();
         assert_eq!(&server_msg_received, &server_message);
 
         let (c_keys, s_keys) = {
