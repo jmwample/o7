@@ -236,9 +236,9 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
     pub(crate) fn client_handshake_ntor_v3_part2(
         relay_handshake: impl AsRef<[u8]>,
         state: &HandshakeState<K, D>,
-    ) ->  RelayHandshakeResult<(Vec<u8>, NtorV3XofReader)> {
+    ) -> RelayHandshakeResult<(Vec<u8>, NtorV3XofReader)> {
         let msg = relay_handshake.as_ref();
-        if Server::<K,D>::SERVER_MIN_HANDSHAKE_LENGTH > msg.len() {
+        if Server::<K, D>::SERVER_MIN_HANDSHAKE_LENGTH > msg.len() {
             Err(RelayHandshakeError::EAgain)?;
         }
 
@@ -260,7 +260,6 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
             "{} successfully parsed server handshake",
             state.materials.session_id
         );
-
 
         todo!("client handshake part 2");
 

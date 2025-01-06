@@ -2,7 +2,7 @@ use crate::{
     common::{
         ct,
         drbg::SEED_LENGTH,
-        ntor_arti::{AuxDataReply, RelayHandshakeError, RelayHandshakeResult, ServerHandshake},
+        ntor_arti::{self, AuxDataReply, RelayHandshakeError, RelayHandshakeResult},
         utils::{find_mac_mark, get_epoch_hour},
     },
     constants::*,
@@ -52,8 +52,21 @@ impl HandshakeMaterials {
     }
 }
 
-impl<K: OKemCore, D: Digest> ServerHandshake for Server<K, D> {
-    type HandshakeParams = SHSMaterials;
+pub(crate) struct ServerHandshake<K: OKemCore, D: Digest> {
+    materials: HandshakeMaterials,
+    server: Server<K, D>,
+}
+
+impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
+    pub(crate) fn new(server: Server<K, D>, materials: HandshakeMaterials) -> Self {
+        Self {
+            materials,
+            server: server.clone(),
+        }
+    }
+}
+
+impl<K: OKemCore, D: Digest> ntor_arti::ServerHandshake for ServerHandshake<K, D> {
     type KeyGen = NtorV3KeyGenerator;
     type ClientAuxData = [NtorV3Extension];
     type ServerAuxData = Vec<NtorV3Extension>;
@@ -74,7 +87,7 @@ impl<K: OKemCore, D: Digest> ServerHandshake for Server<K, D> {
         let mut rng = rand::thread_rng();
 
         let (response, reader) =
-            self.server_handshake_ntor_v3(&mut rng, &mut bytes_reply_fn, msg.as_ref(), materials)?;
+            self.handshake_ntor_v3(&mut rng, &mut bytes_reply_fn, msg.as_ref())?;
 
         response.marshall(&mut rng, reply_buf);
 
@@ -82,18 +95,7 @@ impl<K: OKemCore, D: Digest> ServerHandshake for Server<K, D> {
     }
 }
 
-pub(crate) struct O5ServerHandshake<K:OkemCore, D: Digest> {
-    materials: HandshakeMaterials,
-    server: Server<K,D>,
-}
-
-impl<K:OKemCore, D: Digest> O5ServerHandshake<K,D> {
-    pub(crate) fn with_context(&mut self, HandshakeMaterials) -> &Self {
-        self
-    }
-}
-
-impl<K: OKemCore, D: Digest> Server<K, D> {
+impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
     /// Complete an ntor v3 handshake as a server.
     ///
     ///    shared_secret_1 = Decapsulate(DKs, ct)
@@ -108,26 +110,24 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
     ///    SESSION_KEY = F1(FS, context | PROTOID | ":key_extract")
     ///
     /// On success, return the server handshake message to send, and the session keys
-    pub(crate) fn server_handshake_ntor_v3<'a>(
+    pub(crate) fn handshake_ntor_v3<'a>(
         &self,
         rng: &mut impl CryptoRngCore,
         reply_fn: &mut impl MsgReply,
         message: &'a [u8],
-        materials: <Self as ServerHandshake>::HandshakeParams,
     ) -> RelayHandshakeResult<(
         ServerHandshakeMessage<K, D, ServerStateOutgoing<D>>,
         NtorV3XofReader,
     )> {
-        self.server_handshake_ntor_v3_no_keygen(rng, reply_fn, message, materials)
+        self.handshake_ntor_v3_no_keygen(rng, reply_fn, message)
     }
 
     /// As `server_handshake_ntor_v3`, but take a secret key instead of an RNG.
-    pub(crate) fn server_handshake_ntor_v3_no_keygen<'a>(
+    pub(crate) fn handshake_ntor_v3_no_keygen<'a>(
         &self,
         rng: &mut impl CryptoRngCore,
         extension_handle: &mut impl MsgReply,
         msg: &'a [u8],
-        materials: HandshakeMaterials,
     ) -> RelayHandshakeResult<(
         ServerHandshakeMessage<K, D, ServerStateOutgoing<D>>,
         NtorV3XofReader,
@@ -137,7 +137,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             Err(RelayHandshakeError::EAgain)?;
         }
 
-        let mut client_hs = match self.try_parse_client_handshake(msg, &materials) {
+        let mut client_hs = match self.try_parse_client_handshake(msg, &self.materials) {
             Ok(chs) => chs,
             Err(RelayHandshakeError::EAgain) => {
                 return Err(RelayHandshakeError::EAgain);
@@ -145,7 +145,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             Err(_e) => {
                 debug!(
                     "{} failed to parse client handshake: {_e}",
-                    materials.session_id
+                    self.materials.session_id
                 );
                 return Err(RelayHandshakeError::BadClientHandshake);
             }
@@ -153,7 +153,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
 
         debug!(
             "{} successfully parsed client handshake",
-            materials.session_id
+            self.materials.session_id
         );
         let client_session_ek = client_hs.get_public();
         let ephemeral_secret = client_hs.get_ephemeral_secret();
@@ -186,10 +186,10 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         // Handshake context = EKco || CTco || EKso || CTso || protocol_id
         let mut context = {
             let mut c = SecretBuf::new();
-            c.write(&msg[K::EK_SIZE .. K::EK_SIZE + K::CT_SIZE]) // EKco || CTco from client handshake
-                .and_then(|_| c.write(&self.get_identity().ek.as_bytes()[..])) // EKso server identity key
+            c.write(&msg[K::EK_SIZE..K::EK_SIZE + K::CT_SIZE]) // EKco || CTco from client handshake
+                .and_then(|_| c.write(&self.server.get_identity().ek.as_bytes()[..])) // EKso server identity key
                 .and_then(|_| c.write(&ciphertext.as_bytes()[..])) // CTso server created ciphertext
-                .and_then(|_| c.write(Self::protocol_id())) // protocol ID
+                .and_then(|_| c.write(Server::<K, D>::protocol_id())) // protocol ID
                 .map_err(|_| {
                     RelayHandshakeError::FrameError("failed to wire reply context".into())
                 })?;
@@ -231,16 +231,19 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             .reply(&client_hs.get_extensions())
             .unwrap_or_default();
 
-        let pad_len = rng.gen_range(MIN_PAD_LENGTH..Self::SERVER_MAX_PAD_LENGTH); // TODO - recalculate these
+        let pad_len = rng.gen_range(MIN_PAD_LENGTH..Server::<K, D>::SERVER_MAX_PAD_LENGTH); // TODO - recalculate these
 
         let state_outgoing = ServerStateOutgoing::<D> {
             pad_len,
-            hs_materials: materials,
             encrypted_extension_reply: encrypt::<D>(&enc_key, &extensions_reply),
             ephemeral_secret,
+            hs_materials: &self.materials,
         };
-        let server_hs_msg =
-            ServerHandshakeMessage::<K, D, ServerStateOutgoing<D>>::new(ciphertext, auth, state_outgoing);
+        let server_hs_msg = ServerHandshakeMessage::<K, D, ServerStateOutgoing<D>>::new(
+            ciphertext,
+            auth,
+            state_outgoing,
+        );
 
         Ok((server_hs_msg, NtorV3XofReader::new(keystream)))
 
@@ -269,23 +272,24 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         }
 
         // chunk off the clients encapsulation key
-        let mut client_ek_obfs = vec![0u8; Self::EK_SIZE];
-        client_ek_obfs.copy_from_slice(&buf[0..Self::EK_SIZE]);
+        let mut client_ek_obfs = vec![0u8; K::EK_SIZE];
+        client_ek_obfs.copy_from_slice(&buf[0..K::EK_SIZE]);
 
         // chunk off the ciphertext
-        let mut client_ct_obfs = vec![0u8; Self::CT_SIZE];
-        client_ct_obfs.copy_from_slice(&buf[Self::EK_SIZE..Self::EK_SIZE + Self::CT_SIZE]);
+        let mut client_ct_obfs = vec![0u8; K::CT_SIZE];
+        client_ct_obfs.copy_from_slice(&buf[K::EK_SIZE..K::EK_SIZE + K::CT_SIZE]);
 
         // decode and decapsulate the secret encoded by the client
         let client_ct = <K as OKemCore>::Ciphertext::try_from_bytes(&client_ct_obfs)
             .map_err(|e| RelayHandshakeError::FailedParse)?;
         let shared_secret_1 = self
+            .server
             .identity_keys
             .sk
             .decapsulate(&client_ct)
             .map_err(|e| RelayHandshakeError::FailedDecapsulation)?;
 
-        let node_id = self.get_identity().id;
+        let node_id = self.server.get_identity().id;
         let mut f2 = SimpleHmac::<D>::new_from_slice(node_id.as_bytes())
             .expect("keying server f2 hmac should never fail");
 
@@ -312,7 +316,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             hex::encode(client_mark)
         );
 
-        let min_position = Self::CT_SIZE + Self::EK_SIZE + MIN_PAD_LENGTH;
+        let min_position = K::CT_SIZE + K::EK_SIZE + MIN_PAD_LENGTH;
 
         // find mark + mac position
         let pos = match find_mac_mark::<D>(client_mark, buf, min_position, MAX_PACKET_LENGTH, true)
@@ -359,6 +363,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
                 trace!("correct mac");
                 // Ensure that this handshake has not been seen previously.
                 if self
+                    .server
                     .replay_filter
                     .test_and_set(Instant::now(), mac_received)
                 {

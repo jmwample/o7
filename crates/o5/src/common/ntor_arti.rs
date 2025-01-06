@@ -124,9 +124,6 @@ where
 /// server onionskin. It is assumed that the (long term identity) keys are stored
 /// as part of the object implementing this trait.
 pub(crate) trait ServerHandshake {
-    /// Custom parameters used per handshake rather than long lived config stored
-    /// in the object implementing this trait.
-    type HandshakeParams;
     /// The returned key generator type.
     type KeyGen;
     /// Type of extra data sent from client (without forward secrecy).
@@ -143,10 +140,9 @@ pub(crate) trait ServerHandshake {
     ///
     /// The self parameter is a type / struct for (potentially shared) state
     /// accessible during the server handshake.
-    fn server<REPLY: AuxDataReply<Self>, T: AsRef<[u8]>, Out:BufMut>(
+    fn server<REPLY: AuxDataReply<Self>, T: AsRef<[u8]>, Out: BufMut>(
         &self,
         reply_fn: &mut REPLY,
-        materials: Self::HandshakeParams,
         msg: T,
         reply_buf: &mut Out,
     ) -> RelayHandshakeResult<Self::KeyGen>;

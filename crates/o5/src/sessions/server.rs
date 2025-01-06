@@ -2,12 +2,12 @@ use crate::{
     common::{
         discard, drbg,
         ntor_arti::{
-            AuxDataReply, RelayHandshakeError, ServerHandshake, SessionID, SessionIdentifier,
+            AuxDataReply, RelayHandshakeError, ServerHandshake as _, SessionID, SessionIdentifier,
         },
     },
     constants::*,
     framing,
-    handshake::{NtorV3KeyGen, SHSMaterials},
+    handshake::{NtorV3KeyGen, SHSMaterials, ServerHandshake},
     proto::{O5Stream, ObfuscatedStream},
     server::Server,
     sessions::{Established, Fault, Initialized, Session},
@@ -121,7 +121,7 @@ impl ServerSession<Initialized> {
         self,
         server: &Server<K, D>,
         mut stream: T,
-        extensions_handler: &mut impl AuxDataReply<Server<K, D>>,
+        extensions_handler: &mut impl AuxDataReply<ServerHandshake<K, D>>,
         deadline: Option<Instant>,
     ) -> Result<O5Stream<T, K>>
     where
@@ -179,7 +179,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
     /// Complete the handshake with the client. This function assumes that the
     /// client has already sent a message and that we do not know yet if the
     /// message is valid.
-    async fn complete_handshake<REPLY: AuxDataReply<Self>, T>(
+    async fn complete_handshake<REPLY: AuxDataReply<ServerHandshake<K, D>>, T>(
         &self,
         mut stream: T,
         reply_fn: &mut REPLY,
@@ -193,6 +193,8 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
 
         // wait for and attempt to consume the client hello message
         let mut buf = [0_u8; MAX_PACKET_LENGTH];
+        let server_hs = ServerHandshake::new(self.clone(), materials); // clones the server Arc reference
+                                                                       //
         loop {
             let n = stream.read(&mut buf).await?;
             if n == 0 {
@@ -202,7 +204,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             trace!("{} successful read {n}B", session_id);
 
             let mut response = BytesMut::new();
-            match self.server(reply_fn, materials, &buf[..n], &mut response) {
+            match server_hs.server(reply_fn, &buf[..n], &mut response) {
                 Ok(keygen) => {
                     stream.write_all(&response).await?;
                     info!("{} handshake complete", session_id);

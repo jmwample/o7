@@ -48,7 +48,7 @@ pub(crate) use client::{
 };
 
 mod server;
-pub(crate) use server::HandshakeMaterials as SHSMaterials;
+pub(crate) use server::{HandshakeMaterials as SHSMaterials, ServerHandshake};
 
 /// The size of an encryption key in bytes.
 pub const ENC_KEY_LEN: usize = 32;
@@ -229,9 +229,10 @@ mod test {
     #![allow(clippy::needless_pass_by_value)]
     //! <!-- @@ end test lint list maintained by maint/add_warning @@ -->
     use crate::common::ntor_arti::{
-        ClientHandshake, ClientHandshakeComplete, KeyGenerator, ServerHandshake,
+        ClientHandshake, ClientHandshakeComplete, KeyGenerator, ServerHandshake as _,
     };
     use crate::constants::{NODE_ID_LENGTH, SEED_LENGTH};
+    use crate::handshake::server::ServerHandshake;
     use crate::test_utils::init_subscriber;
     use crate::Server;
 
@@ -275,12 +276,16 @@ mod test {
 
         let server = Server::<MlKem768, Sha3_256>::new(relay_private);
         let shs_materials = SHSMaterials::new("test_server_000".into(), [0u8; SEED_LENGTH]);
-        let (s_handshake, mut s_keygen) = server
-            .server_handshake_ntor_v3(&mut rng, &mut rep, &c_handshake, shs_materials)
+        let server_hs = ServerHandshake::new(server.clone(), shs_materials);
+
+        let (s_handshake, mut s_keygen) = server_hs
+            .handshake_ntor_v3(&mut rng, &mut rep, &c_handshake)
             .unwrap();
 
         let mut shs_msg = BytesMut::new();
-        s_handshake.marshall(&mut rng, &mut shs_msg).expect("failed to serialize server handshake");
+        s_handshake
+            .marshall(&mut rng, &mut shs_msg)
+            .expect("failed to serialize server handshake");
 
         let (s_msg, mut c_keygen) =
             O5Client::client_handshake_ntor_v3_part2(&shs_msg, &c_state).unwrap();
@@ -312,8 +317,8 @@ mod test {
         };
 
         let mut s_handshake = BytesMut::new();
-        let s_keygen = server
-            .server(&mut rep, shs_materials, &c_handshake, &mut s_handshake)
+        let s_keygen = ServerHandshake::new(server.clone(), shs_materials)
+            .server(&mut rep, &c_handshake, &mut s_handshake)
             .unwrap();
 
         let hs_complete = NtorV3Client::client2(&mut c_state, s_handshake).unwrap();
@@ -350,8 +355,8 @@ mod test {
         };
         let server = Server::<MlKem768, Sha3_256>::new_from_random(&mut thread_rng());
         let mut s_handshake = BytesMut::new();
-        let s_keygen = server
-            .server(&mut rep, shs_materials, &c_handshake, &mut s_handshake)
+        let s_keygen = ServerHandshake::new(server.clone(), shs_materials)
+            .server(&mut rep, &c_handshake, &mut s_handshake)
             .unwrap();
 
         let hs_complete = NtorV3Client::client2(&mut c_state, s_handshake).unwrap();
@@ -404,14 +409,16 @@ mod test {
         };
 
         let server = Server::<MlKem768, Sha3_256>::new(relay_private);
-        let (server_handshake, mut server_keygen) = server
-            .server_handshake_ntor_v3_no_keygen(&mut rng, &mut rep, &client_handshake, materials)
+        let server_hs = ServerHandshake::new(server.clone(), materials);
+        let (server_handshake, mut server_keygen) = server_hs
+            .handshake_ntor_v3_no_keygen(&mut rng, &mut rep, &client_handshake)
             .unwrap();
         assert!(rep.2);
 
-
         let mut shs_msg = BytesMut::new();
-        server_handshake.marshall(&mut rng, &mut shs_msg).expect("failed to serialize server handshake");
+        server_handshake
+            .marshall(&mut rng, &mut shs_msg)
+            .expect("failed to serialize server handshake");
 
         // This will fail
         assert_eq!(shs_msg[..], hex!("4bf4814326fdab45ad5184f5518bd7fae25dc59374062698201a50a22954246d2fc5f8773ca824542bc6cf6f57c7c29bbf4e5476461ab130c5b18ab0a91276651202c3e1e87c0d32054c")[..]);
