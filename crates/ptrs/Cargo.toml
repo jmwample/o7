@@ -21,7 +21,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 futures = "0.3.30"
-itertools = "0.13.0"
+itertools = "0.14.0"
 subtle = "2.5.0"
 thiserror = "2"
 tokio = { version = "1.40", features = ["full"] }
