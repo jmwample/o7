@@ -21,7 +21,7 @@ use crate::{
     Digest, Error, Result, Server,
 };
 
-use bytes::BytesMut;
+use bytes::{BufMut, BytesMut};
 use digest::CtOutput;
 use hmac::{Mac, SimpleHmac};
 use kem::{Decapsulate, Encapsulate};
@@ -47,8 +47,6 @@ use zeroize::Zeroizing;
 pub(crate) struct HandshakeState<K: OKemCore, D: Digest> {
     /// The temporary curve25519 secret (x) that we've generated for
     /// this handshake.
-    // We'd like to EphemeralSecret here, but we can't since we need
-    // to use it twice.
     my_sk: EphemeralKey<K>,
 
     /// handshake materials
@@ -59,6 +57,9 @@ pub(crate) struct HandshakeState<K: OKemCore, D: Digest> {
 
     /// The shared secret generated as F2(node_id, encapsulation_key)
     ephemeral_secret: HandshakeEphemeralSecret<D>,
+
+    /// client hello message that we sent, used again after receiving the server hello.
+    client_hs_msg: BytesMut,
 }
 
 impl<K: OKemCore, D: Digest> HandshakeState<K, D> {
@@ -149,10 +150,13 @@ impl<K: OKemCore, D: Digest> ClientHandshake for NtorV3Client<K, D> {
     ///
     /// On success, return a state object that will be used to complete the handshake, along
     /// with the message to send.
-    fn client1(hs_materials: Self::HandshakeMaterials) -> Result<(Self::StateType, Vec<u8>)> {
+    fn client1<B: BufMut>(
+        hs_materials: Self::HandshakeMaterials,
+        out: &mut B,
+    ) -> Result<Self::StateType> {
         let mut rng = rand::thread_rng();
 
-        Ok(Self::client_handshake_ntor_v3(&mut rng, hs_materials)
+        Ok(Self::client_handshake_ntor_v3(&mut rng, hs_materials, out)
             .map_err(into_internal!("Can't encode ntor3 client handshake."))?)
     }
 
@@ -187,23 +191,25 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
     ///
     /// Given a secure `rng`, a relay's public key, a secret message to send, generate a new handshake
     /// state and a message to send to the relay.
-    pub(crate) fn client_handshake_ntor_v3(
+    pub(crate) fn client_handshake_ntor_v3<Out: BufMut>(
         rng: &mut impl CryptoRngCore,
         materials: HandshakeMaterials<K>,
-    ) -> EncodeResult<(HandshakeState<K, D>, Vec<u8>)> {
+        out_buf: &mut Out,
+    ) -> EncodeResult<HandshakeState<K, D>> {
         let keys = K::generate(rng);
-        Self::client_handshake_ntor_v3_no_keygen(rng, keys, materials)
+        Self::client_handshake_ntor_v3_no_keygen(rng, keys, materials, out_buf)
     }
 
     /// As `client_handshake_ntor_v3`, but don't generate an ephemeral DH
     /// key: instead take that key an arguments `my_sk`.
     ///
     /// (DK, EK , EK1) <-- OKEM.KGen()
-    pub(crate) fn client_handshake_ntor_v3_no_keygen(
+    pub(crate) fn client_handshake_ntor_v3_no_keygen<Out: BufMut>(
         rng: &mut impl CryptoRngCore,
         keys: (K::DecapsulationKey, K::EncapsulationKey),
         materials: HandshakeMaterials<K>,
-    ) -> EncodeResult<(HandshakeState<K, D>, Vec<u8>)> {
+        out_buf: &mut Out,
+    ) -> EncodeResult<HandshakeState<K, D>> {
         let ephemeral_ek = EphemeralPub::new(keys.1);
         let hs_materials = ClientStateOutgoing {
             hs_materials: materials.clone(),
@@ -216,14 +222,17 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
         let mut buf = BytesMut::with_capacity(MAX_PACKET_LENGTH);
         let ephemeral_secret = client_msg.marshall::<D>(rng, &mut buf)?;
 
+        out_buf.put(buf.clone());
+
         let state = HandshakeState {
             materials,
             my_sk: keys::EphemeralKey::new(keys.0),
             ephemeral_secret,
             epoch_hr: client_msg.get_epoch_hr(),
+            client_hs_msg: buf,
         };
 
-        Ok((state, buf.to_vec()))
+        Ok(state)
     }
 
     /// Finalize the handshake on the client side.
@@ -261,76 +270,110 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
             state.materials.session_id
         );
 
-        todo!("client handshake part 2");
+        // get the chunk containing the ciphertext
+        let mut server_ct_obfs = &msg[0..K::CT_SIZE];
 
-        // let mut reader = Reader::from_slice(relay_handshake);
-        // let y_pk: EphemeralPub::<K> = reader
-        //     .extract()
-        //     .map_err(|e| Error::from_bytes_err(e, "v3 ntor handshake"))?;
-        // let auth: DigestVal = reader
-        //     .extract()
-        //     .map_err(|e| Error::from_bytes_err(e, "v3 ntor handshake"))?;
-        // let encrypted_msg = reader.into_rest();
-        // let my_public = EphemeralPub::<K>::from(&state.my_sk);
+        // get the chunk containing the server's authentication
+        let mut server_auth = &msg[K::CT_SIZE..K::CT_SIZE + D::AUTH_SIZE];
 
-        // // TODO: Some of this code is duplicated from the server handshake code!  It
-        // // would be better to factor it out.
-        // let yx = state.my_sk.diffie_hellman(&y_pk);
-        // let secret_input = {
-        //     let mut si = SecretBuf::new();
-        //     si.write(&yx)
-        //         .and_then(|_| si.write(&state.shared_secret.as_bytes()))
-        //         .and_then(|_| si.write(&state.node_id()))
-        //         .and_then(|_| si.write(&state.node_pubkey().as_bytes()))
-        //         .and_then(|_| si.write(&my_public.as_bytes()))
-        //         .and_then(|_| si.write(&y_pk.as_bytes()))
-        //         .and_then(|_| si.write(PROTOID))
-        //         .and_then(|_| si.write(&Encap(verification)))
-        //         .map_err(into_internal!("error encoding ntor3 secret_input"))?;
-        //     si
-        // };
-        // let ntor_key_seed = h_key_seed(&secret_input);
-        // let verify = h_verify(&secret_input);
+        // decode and decapsulate the secret encoded by the server
+        let server_ct = <K as OKemCore>::Ciphertext::try_from_bytes(server_ct_obfs)
+            .map_err(|e| RelayHandshakeError::FailedParse)?;
+        let shared_secret_2 = state
+            .my_sk
+            .decapsulate(&server_ct)
+            .map_err(|e| RelayHandshakeError::FailedDecapsulation)?;
 
-        // let computed_auth: DigestVal = {
-        //     use digest::Digest;
-        //     let mut auth = DigestWriter(Sha3_256::default());
-        //     auth.write(&T_AUTH)
-        //         .and_then(|_| auth.write(&verify))
-        //         .and_then(|_| auth.write(&state.node_id()))
-        //         .and_then(|_| auth.write(&state.node_pubkey().as_bytes()))
-        //         .and_then(|_| auth.write(&y_pk.as_bytes()))
-        //         .and_then(|_| auth.write(&my_public.as_bytes()))
-        //         .and_then(|_| auth.write(&state.msg_mac))
-        //         .and_then(|_| auth.write(&Encap(encrypted_msg)))
-        //         .and_then(|_| auth.write(PROTOID))
-        //         .and_then(|_| auth.write(&b"Server"[..]))
-        //         .map_err(into_internal!("error encoding ntor3 authentication input"))?;
-        //     auth.take().finalize().into()
-        // };
+        let mut f1_es = SimpleHmac::<D>::new_from_slice(state.ephemeral_secret.as_ref())
+            .expect("keying hmac should never fail");
 
-        // let okay = computed_auth.ct_eq(&auth)
-        //     & ct::bool_to_choice(yx.was_contributory())
-        //     & ct::bool_to_choice(state.shared_secret.was_contributory());
+        // compute the Session Ephemeral Secret
+        let derivation_ephemeral = {
+            f1_es.reset();
+            f1_es.update(&KEY_DERIVE_ARG);
+            f1_es.finalize_reset().into_bytes()
+        };
 
-        // let (enc_key, keystream) = {
-        //     use digest::{ExtendableOutput, XofReader};
-        //     let mut xof = DigestWriter(Shake256::default());
-        //     xof.write(&T_FINAL)
-        //         .and_then(|_| xof.write(&ntor_key_seed))
-        //         .map_err(into_internal!("error encoding ntor3 xof input"))?;
-        //     let mut r = xof.take().finalize_xof();
-        //     let mut enc_key = Zeroizing::new([0_u8; ENC_KEY_LEN]);
-        //     r.read(&mut enc_key[..]);
-        //     (enc_key, r)
-        // };
+        let mut f2 = SimpleHmac::<D>::new_from_slice(derivation_ephemeral.as_ref())
+            .expect("keying hmac should never fail");
+
+        // compute our Combiner Ephemeral Secret
+        let combiner_ephemeral = {
+            f2.reset();
+            f2.update(&shared_secret_2.as_bytes()[..]);
+            Zeroizing::new(f2.finalize_reset().into_bytes())
+        };
+
+        // Handshake context = EKco || CTco || EKso || CTso || protocol_id
+        let mut context = {
+            let mut c = SecretBuf::new();
+
+            let client_context_elements = &state.client_hs_msg[K::EK_SIZE..K::EK_SIZE + K::CT_SIZE];
+            c.write(client_context_elements) // EKco || CTco from client handshake
+                .and_then(|_| c.write(&state.node_pubkey().as_bytes()[..])) // EKso server identity key
+                .and_then(|_| c.write(server_ct_obfs)) // CTso server created ciphertext
+                .and_then(|_| c.write(Server::<K, D>::protocol_id())) // protocol ID
+                .map_err(|_| {
+                    RelayHandshakeError::FrameError("failed to wire reply context".into())
+                })?;
+            c
+        };
+
+        let mut f1_fs = SimpleHmac::<D>::new_from_slice(combiner_ephemeral.as_ref())
+            .expect("keying hmac should never fail");
+
+        // Compute the Session Key value used to key our cipher.
+        let session_key = {
+            f1_fs.reset();
+            f1_fs.update(&context[..]);
+            f1_fs.update(KEY_EXTRACT_ARG);
+            Zeroizing::new(f1_fs.finalize_reset().into_bytes())
+        };
+
+        // Compute the Server message authentication value
+        let computed_auth = {
+            f1_fs.reset();
+            f1_fs.update(&context[..]);
+            f1_fs.update(SERVER_AUTH_ARG);
+            f1_fs.finalize_reset().into_bytes()
+        };
+
+        let err = match <subtle::Choice as Into<bool>>::into(computed_auth.ct_eq(&server_auth)) {
+            // // TODO: If an Ellyptic Curve scheme (i.e. X25519) is involved
+            // // make sure that the clients mac matches and that both x25519 keys
+            // & ct::bool_to_choice(yx.was_contributory())
+            // & ct::bool_to_choice(state.shared_secret.was_contributory());
+            true => None,
+            false => {
+                trace!(
+                    "{} != {}",
+                    hex::encode(&computed_auth),
+                    hex::encode(&server_auth)
+                );
+                Some(RelayHandshakeError::ServerAuthMismatch)
+            }
+        };
+
+        let (enc_key, keystream) = {
+            use digest::{ExtendableOutput, Update, XofReader};
+            let mut xof = Shake256::default();
+            xof.update(&T_FINAL);
+            xof.update(&session_key);
+            let mut r = xof.finalize_xof();
+            let mut enc_key = SessionSharedSecret::<D>::default();
+            r.read(&mut enc_key[..]);
+            (enc_key, r)
+        };
+
+        // Decrypt extension messages and give them to the client.
+        // TODO PARSE EXTENSIONS
         // let server_reply = decrypt(&enc_key, encrypted_msg);
 
-        // if okay.into() {
-        //     Ok((server_reply, NtorV3XofReader::new(keystream)))
-        // } else {
-        //     Err(Error::BadCircHandshakeAuth)
-        // }
+        if err.is_none() {
+            Ok((Vec::new(), NtorV3XofReader::new(keystream)))
+        } else {
+            Err(err.unwrap())
+        }
     }
 }
 
@@ -371,24 +414,19 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
         let mut f2 = SimpleHmac::<D>::new_from_slice(node_id.as_bytes())
             .expect("keying server f2 hmac should never fail");
 
-        // Compute the Ephemeral Secret
-        let ephemeral_secret = {
-            f2.update(&shared_secret_1.as_bytes()[..]);
-            Zeroizing::new(f2.finalize_reset().into_bytes())
-        };
-
-        let mut f1_es = SimpleHmac::<Sha3_256>::new_from_slice(ephemeral_secret.as_ref())
+        let mut f1_es = SimpleHmac::<Sha3_256>::new_from_slice(state.ephemeral_secret.as_ref())
             .expect("Keying server f1_es hmac should never fail");
 
         // derive the mark from the Ephemeral Secret
         let server_mark = {
+            f1_es.reset();
             f1_es.update(&server_ct_obfs);
             f1_es.update(SERVER_MARK_ARG);
             f1_es.finalize_reset().into_bytes()
         };
 
         trace!(
-            "{} mark?:{}",
+            "client-{} mark?:{}",
             state.materials.session_id,
             hex::encode(server_mark)
         );
@@ -408,6 +446,7 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
             }
         };
 
+        // // TODO: should this use state.epoch_hr? Do we even need to try multiple time stamps??
         // validate he MAC
         let mut mac_found = false;
         let mut epoch_hour = String::new();
@@ -431,7 +470,9 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
                 hex::encode(mac_received)
             );
 
-            //  and that both x25519 keys contributed (i.e. neither was 0)
+            // // TODO: If an Ellyptic Curve scheme (i.e. X25519) is involved
+            // // make sure that the clients mac matches and that both x25519 keys
+            // // contributed (i.e. neither was 0)
             // let mut okay = computed_mac.ct_eq(&msg_mac)
             //     & ct::bool_to_choice(xy.was_contributory())
             //     & ct::bool_to_choice(xb.was_contributory());

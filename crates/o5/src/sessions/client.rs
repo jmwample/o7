@@ -225,7 +225,8 @@ impl<K: OKemCore> ClientSession<Initialized, K> {
         D: Digest,
     {
         // let session_id = materials.session_id;
-        let (mut state, chs_message) = NtorV3Client::<K, D>::client1(materials)?;
+        let mut chs_message = BytesMut::new();
+        let mut state = NtorV3Client::<K, D>::client1(materials, &mut chs_message)?;
         // let mut file = tokio::fs::File::create("message.hex").await?;
         // file.write_all(&chs_message).await?;
         stream.write_all(&chs_message).await?;

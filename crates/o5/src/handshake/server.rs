@@ -247,17 +247,7 @@ impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
 
         Ok((server_hs_msg, NtorV3XofReader::new(keystream)))
 
-        // todo!("construct & send server handshake");
-    }
-
-    // TODO: what is the purpose of this in obfs4?
-    pub(crate) fn complete_server_hs(
-        &self,
-        client_hs: &ClientHandshakeMessage<K, ClientStateIncoming<D>>,
-        materials: &HandshakeMaterials,
-        authcode: Authcode<D>,
-    ) -> RelayHandshakeResult<Vec<u8>> {
-        todo!("is this necessary?")
+        // todo!("Add extensions and prng seed to the server hello");
     }
 
     fn try_parse_client_handshake(
@@ -271,13 +261,11 @@ impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
             Err(RelayHandshakeError::EAgain)?;
         }
 
-        // chunk off the clients encapsulation key
-        let mut client_ek_obfs = vec![0u8; K::EK_SIZE];
-        client_ek_obfs.copy_from_slice(&buf[0..K::EK_SIZE]);
+        // get the chunk containing the clients encapsulation key
+        let mut client_ek_obfs = &buf[0..K::EK_SIZE];
 
-        // chunk off the ciphertext
-        let mut client_ct_obfs = vec![0u8; K::CT_SIZE];
-        client_ct_obfs.copy_from_slice(&buf[K::EK_SIZE..K::EK_SIZE + K::CT_SIZE]);
+        // get the chunk containing the ciphertext
+        let mut client_ct_obfs = &buf[K::EK_SIZE..K::EK_SIZE + K::CT_SIZE];
 
         // decode and decapsulate the secret encoded by the client
         let client_ct = <K as OKemCore>::Ciphertext::try_from_bytes(&client_ct_obfs)

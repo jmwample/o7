@@ -76,7 +76,10 @@ pub trait ClientHandshake {
     ///
     /// On success, return a state object that will be used to
     /// complete the handshake, along with the message to send.
-    fn client1(materials: Self::HandshakeMaterials) -> Result<(Self::StateType, Vec<u8>)>;
+    fn client1<Out: BufMut>(
+        materials: Self::HandshakeMaterials,
+        out: &mut Out,
+    ) -> Result<Self::StateType>;
 
     /// Handle an onionskin from a relay, and produce aux data returned
     /// from the server, and a key generator.
@@ -211,6 +214,12 @@ pub enum RelayHandshakeError {
     /// an otherwise invalid response was received
     #[error("Bad handshake from server")]
     BadServerHandshake,
+
+    /// The handshake response from the server contained an auth value that does not
+    /// match the expected computed auth value. Either an error occurred or someone
+    /// is trying to mitm the connection. Handshake fails.
+    #[error("server handshake has incorrect auth value")]
+    ServerAuthMismatch,
 
     /// The client's handshake matched a previous handshake indicating a potential replay attack.
     #[error("Handshake from client was seen recently -- potentially replayed.")]

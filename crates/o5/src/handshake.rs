@@ -262,8 +262,9 @@ mod test {
         let relay_message = &b"Greetings, client. I am a robot. Beep boop."[..];
         let materials = CHSMaterials::new(&relay_private.pk, "fake_session_id-1".into());
 
-        let (c_state, c_handshake) =
-            O5Client::client_handshake_ntor_v3(&mut rng, materials).unwrap();
+        let mut c_handshake = BytesMut::new();
+        let c_state =
+            O5Client::client_handshake_ntor_v3(&mut rng, materials, &mut c_handshake).unwrap();
 
         struct Rep(Vec<u8>, Vec<u8>);
         impl MsgReply for Rep {
@@ -306,7 +307,8 @@ mod test {
         let relay_private = IdentitySecretKey::random_from_rng(&mut testing_rng());
 
         let materials = CHSMaterials::new(&relay_private.pk, "fake_session_id-1".into());
-        let (mut c_state, c_handshake) = O5Client::client1(materials).unwrap();
+        let mut c_handshake = BytesMut::new();
+        let mut c_state = O5Client::client1(materials, &mut c_handshake).unwrap();
 
         let mut rep = |_: &[NtorV3Extension]| Some(vec![]);
 
@@ -342,7 +344,8 @@ mod test {
         let materials = CHSMaterials::new(&relay_private.pk, "client_session_1".into())
             .with_early_data([NtorV3Extension::RequestCongestionControl]);
 
-        let (mut c_state, c_handshake) = O5Client::client1(materials).unwrap();
+        let mut c_handshake = BytesMut::new();
+        let mut c_state = O5Client::client1(materials, &mut c_handshake).unwrap();
 
         let mut rep = |msg: &[NtorV3Extension]| -> Option<Vec<NtorV3Extension>> {
             assert_eq!(msg, client_exts);
@@ -389,8 +392,14 @@ mod test {
         let relay_public = IdentityPublicKey::<MlKem768>::from(&relay_private); // { pk: B, id };
 
         let mut chs_materials = CHSMaterials::new(&relay_public, "0000000000000000".into());
-        let (state, client_handshake) =
-            O5Client::client_handshake_ntor_v3_no_keygen(&mut rng, (x, X), chs_materials).unwrap();
+        let mut client_handshake = BytesMut::new();
+        let state = O5Client::client_handshake_ntor_v3_no_keygen(
+            &mut rng,
+            (x, X),
+            chs_materials,
+            &mut client_handshake,
+        )
+        .unwrap();
 
         assert_eq!(client_handshake[..], hex!("9fad2af287ef942632833d21f946c6260c33fae6172b60006e86e4a6911753a2f8307a2bc1870b00b828bb74dbb8fd88e632a6375ab3bcd1ae706aaa8b6cdd1d252fe9ae91264c91d4ecb8501f79d0387e34ad8ca0f7c995184f7d11d5da4f463bebd9151fd3b47c180abc9e044d53565f04d82bbb3bebed3d06cea65db8be9c72b68cd461942088502f67")[..]);
 
