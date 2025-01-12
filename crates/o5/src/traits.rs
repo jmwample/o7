@@ -1,18 +1,6 @@
 //! Collection of Traits used by the O5 transport implementation
 
-use kemeleon::OKemCore;
 use typenum::Unsigned;
-
-pub trait Digest:
-    digest::Digest + digest::core_api::BlockSizeUser + digest::FixedOutputReset + Named + Clone
-{
-}
-
-impl<
-        D: digest::Digest + digest::core_api::BlockSizeUser + digest::FixedOutputReset + Named + Clone,
-    > Digest for D
-{
-}
 
 pub trait Named {
     const NAME: &str;
@@ -25,6 +13,20 @@ impl Named for kemeleon::MlKem768 {
 impl Named for sha3::Sha3_256 {
     const NAME: &str = "sha3-256";
 }
+
+pub trait Digest:
+    digest::Digest + digest::core_api::BlockSizeUser + digest::FixedOutputReset + Named + Clone
+{
+}
+
+impl<
+        D: digest::Digest + digest::core_api::BlockSizeUser + digest::FixedOutputReset + Named + Clone,
+    > Digest for D
+{
+}
+
+pub trait OKemCore: kemeleon::OKemCore + Named {}
+impl<O: kemeleon::OKemCore + Named> OKemCore for O {}
 
 pub trait DigestSizes: Digest {
     /// Size of an authentication value in bytes
@@ -47,9 +49,10 @@ pub trait FramingSizes: OKemCore {
 }
 
 impl<K: OKemCore> FramingSizes for K {
-    const CT_SIZE: usize = <<K as OKemCore>::Ciphertext as kemeleon::Encode>::EncodedSize::USIZE;
+    const CT_SIZE: usize =
+        <<K as kemeleon::OKemCore>::Ciphertext as kemeleon::Encode>::EncodedSize::USIZE;
     const EK_SIZE: usize =
-        <<K as OKemCore>::EncapsulationKey as kemeleon::Encode>::EncodedSize::USIZE;
+        <<K as kemeleon::OKemCore>::EncapsulationKey as kemeleon::Encode>::EncodedSize::USIZE;
 }
 
 // trait HandshakeSize {

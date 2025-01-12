@@ -1,7 +1,7 @@
 #![allow(unused)] // TODO: Remove this. nothing unused should stay
 // #![deny(missing_docs)]
 
-use kemeleon::{Encode, EncodingSize, KemeleonByteArraySize, OKemCore};
+use kemeleon::{Encode, EncodingSize, KemeleonByteArraySize};
 use ml_kem::{Ciphertext, MlKem768Params};
 use tor_llcrypto::pk::ed25519::ED25519_ID_LEN;
 use typenum::Unsigned;

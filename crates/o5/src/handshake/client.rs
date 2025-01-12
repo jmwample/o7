@@ -17,7 +17,7 @@ use crate::{
         ClientHandshakeMessage, ClientStateOutgoing, ServerHandshakeMessage, ServerStateIncoming,
     },
     handshake::{keys::*, *},
-    traits::{DigestSizes, FramingSizes},
+    traits::{DigestSizes, FramingSizes, OKemCore},
     Digest, Error, Result, Server,
 };
 
@@ -25,7 +25,7 @@ use bytes::{BufMut, BytesMut};
 use digest::CtOutput;
 use hmac::{Mac, SimpleHmac};
 use kem::{Decapsulate, Encapsulate};
-use kemeleon::{Encode, OKemCore};
+use kemeleon::Encode;
 use ptrs::{debug, trace};
 use rand::{CryptoRng, Rng, RngCore};
 use rand_core::CryptoRngCore;
@@ -63,7 +63,7 @@ pub(crate) struct HandshakeState<K: OKemCore, D: Digest> {
 }
 
 impl<K: OKemCore, D: Digest> HandshakeState<K, D> {
-    fn node_pubkey(&self) -> &<K as OKemCore>::EncapsulationKey {
+    fn node_pubkey(&self) -> &<K as kemeleon::OKemCore>::EncapsulationKey {
         &self.materials.node_pubkey.ek
     }
 
@@ -277,7 +277,7 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
         let mut server_auth = &msg[K::CT_SIZE..K::CT_SIZE + D::AUTH_SIZE];
 
         // decode and decapsulate the secret encoded by the server
-        let server_ct = <K as OKemCore>::Ciphertext::try_from_bytes(server_ct_obfs)
+        let server_ct = <K as kemeleon::OKemCore>::Ciphertext::try_from_bytes(server_ct_obfs)
             .map_err(|e| RelayHandshakeError::FailedParse)?;
         let shared_secret_2 = state
             .my_sk
@@ -312,7 +312,7 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
             c.write(client_context_elements) // EKco || CTco from client handshake
                 .and_then(|_| c.write(&state.node_pubkey().as_bytes()[..])) // EKso server identity key
                 .and_then(|_| c.write(server_ct_obfs)) // CTso server created ciphertext
-                .and_then(|_| c.write(Server::<K, D>::protocol_id())) // protocol ID
+                .and_then(|_| c.write(Server::<K, D>::protocol_id().as_bytes())) // protocol ID
                 .map_err(|_| {
                     RelayHandshakeError::FrameError("failed to wire reply context".into())
                 })?;
@@ -403,7 +403,7 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
         // );
 
         // decode and decapsulate the secret encoded by the server
-        let server_ct = <K as OKemCore>::Ciphertext::try_from_bytes(&server_ct_obfs)
+        let server_ct = <K as kemeleon::OKemCore>::Ciphertext::try_from_bytes(&server_ct_obfs)
             .map_err(|e| RelayHandshakeError::FailedParse)?;
         let shared_secret_1 = state
             .my_sk

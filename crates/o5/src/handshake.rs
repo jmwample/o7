@@ -5,14 +5,14 @@
 //! encrypt data (without forward secrecy) after it sends the first
 //! message.
 
-use crate::{common::ntor_arti::ClientHandshakeComplete, Digest};
+use crate::{common::ntor_arti::ClientHandshakeComplete, traits::OKemCore, Digest};
 
 use cipher::{KeyIvInit as _, StreamCipher as _};
 use digest::{
     generic_array::{ArrayLength, GenericArray},
     Digest as _, ExtendableOutput as _, OutputSizeUser, XofReader as _,
 };
-use kemeleon::{Encode, OKemCore};
+use kemeleon::Encode;
 use tor_bytes::{EncodeResult, Writeable, Writer};
 use tor_llcrypto::cipher::aes::Aes256Ctr;
 use tor_llcrypto::d::{Sha3_256, Shake256};

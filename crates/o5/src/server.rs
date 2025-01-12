@@ -12,8 +12,8 @@ use crate::{
     handshake::{IdentityPublicKey, IdentitySecretKey},
     proto::{MaybeTimeout, O5Stream},
     sessions::{Initialized, ServerSession, Session},
-    traits::{DigestSizes, FramingSizes},
-    transport_name, type_name, Digest, Error, Result,
+    traits::{DigestSizes, FramingSizes, OKemCore},
+    transport_name, Digest, Error, Result,
 };
 
 use std::{
@@ -23,7 +23,6 @@ use std::{
 use bytes::{Buf, BufMut, Bytes};
 use hex::FromHex;
 use hmac::{Hmac, Mac};
-use kemeleon::OKemCore;
 use ptrs::{args::Args, debug, info};
 use rand::prelude::*;
 use subtle::ConstantTimeEq;
@@ -322,8 +321,13 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
         self.identity_keys.pk.clone()
     }
 
-    pub(crate) fn protocol_id<'a>() -> &'a [u8] {
-        concat!(transport_name!(), "_", type_name!(K), "_", type_name!(D)).as_bytes()
+    pub(crate) fn protocol_id<'a>() -> String {
+        let mut id = transport_name!().to_owned();
+        id.push('_');
+        id.push_str(K::NAME);
+        id.push('_');
+        id.push_str(D::NAME);
+        id
     }
 }
 

@@ -11,13 +11,13 @@ use crate::{
     proto::{O5Stream, ObfuscatedStream},
     server::Server,
     sessions::{Established, Fault, Initialized, Session},
+    traits::OKemCore,
     Digest, Error, Result,
 };
 
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
 use bytes::BytesMut;
-use kemeleon::OKemCore;
 use ptrs::{debug, info, trace};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::Instant;

@@ -6,12 +6,14 @@ use crate::{
     framing::{FrameError, Marshall, O5Codec, TryParse, KEY_LENGTH, KEY_MATERIAL_LENGTH},
     handshake::IdentityPublicKey,
     proto::{MaybeTimeout, O5Stream},
-    sessions, Digest, Error, Result,
+    sessions,
+    traits::OKemCore,
+    Digest, Error, Result,
 };
 
 use bytes::{Buf, BufMut, BytesMut};
 use hmac::{Hmac, Mac};
-use kemeleon::{Encode, OKemCore};
+use kemeleon::Encode;
 use ptrs::{debug, info, trace, warn};
 use rand::prelude::*;
 use subtle::ConstantTimeEq;

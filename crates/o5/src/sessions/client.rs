@@ -14,6 +14,7 @@ use crate::{
     },
     proto::{O5Stream, ObfuscatedStream},
     sessions::{Established, Fault, Initialized, Session},
+    traits::OKemCore,
     Digest, Error, Result,
 };
 
@@ -23,7 +24,7 @@ use std::{
 };
 
 use bytes::{BufMut, BytesMut};
-use kemeleon::{Encode, OKemCore};
+use kemeleon::Encode;
 use ptrs::{debug, info};
 use rand_core::RngCore;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};

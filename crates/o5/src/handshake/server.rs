@@ -12,7 +12,7 @@ use crate::{
     },
     handshake::client::NtorV3Client as Client,
     handshake::*,
-    traits::{DigestSizes, FramingSizes},
+    traits::{DigestSizes, FramingSizes, OKemCore},
     Digest, Error, Result, Server,
 };
 
@@ -22,7 +22,6 @@ use bytes::BufMut;
 use digest::{Digest as _, ExtendableOutput as _};
 use hmac::{Mac, SimpleHmac};
 use kem::{Decapsulate, Encapsulate};
-use kemeleon::OKemCore;
 use keys::NtorV3KeyGenerator;
 use ptrs::{debug, trace};
 use rand::Rng;
@@ -189,7 +188,7 @@ impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
             c.write(&msg[K::EK_SIZE..K::EK_SIZE + K::CT_SIZE]) // EKco || CTco from client handshake
                 .and_then(|_| c.write(&self.server.get_identity().ek.as_bytes()[..])) // EKso server identity key
                 .and_then(|_| c.write(&ciphertext.as_bytes()[..])) // CTso server created ciphertext
-                .and_then(|_| c.write(Server::<K, D>::protocol_id())) // protocol ID
+                .and_then(|_| c.write(Server::<K, D>::protocol_id().as_bytes())) // protocol ID
                 .map_err(|_| {
                     RelayHandshakeError::FrameError("failed to wire reply context".into())
                 })?;
@@ -268,7 +267,7 @@ impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
         let mut client_ct_obfs = &buf[K::EK_SIZE..K::EK_SIZE + K::CT_SIZE];
 
         // decode and decapsulate the secret encoded by the client
-        let client_ct = <K as OKemCore>::Ciphertext::try_from_bytes(&client_ct_obfs)
+        let client_ct = <K as kemeleon::OKemCore>::Ciphertext::try_from_bytes(&client_ct_obfs)
             .map_err(|e| RelayHandshakeError::FailedParse)?;
         let shared_secret_1 = self
             .server

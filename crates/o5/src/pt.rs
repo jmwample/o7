@@ -1,6 +1,6 @@
 use crate::{
-    constants::*, handshake::IdentityPublicKey, proto::O5Stream, transport_name, type_name, Digest,
-    Error,
+    constants::*, handshake::IdentityPublicKey, proto::O5Stream, traits::OKemCore, transport_name,
+    Digest, Error,
 };
 
 use std::{
@@ -13,7 +13,7 @@ use std::{
 };
 
 use hex::FromHex;
-use kemeleon::{Encode, MlKem768, OKemCore};
+use kemeleon::{Encode, MlKem768};
 use ptrs::{args::Args, trace, FutureResult as F};
 use sha3::Sha3_256;
 use tokio::{
@@ -35,14 +35,19 @@ where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     K: OKemCore + Send + Sync + 'static,
     D: Digest + Send + Sync + 'static,
-    <K as OKemCore>::EncapsulationKey: Send + Sync,
-    <K as OKemCore>::DecapsulationKey: Send + Sync,
+    <K as kemeleon::OKemCore>::EncapsulationKey: Send + Sync,
+    <K as kemeleon::OKemCore>::DecapsulationKey: Send + Sync,
 {
     type ClientBuilder = crate::ClientBuilder<K, D>;
     type ServerBuilder = crate::ServerBuilder<T, K, D>;
 
     fn name() -> String {
-        concat!(transport_name!(), "_", type_name!(K), "_", type_name!(D)).into()
+        let mut id = transport_name!().to_owned();
+        id.push('_');
+        id.push_str(K::NAME);
+        id.push('_');
+        id.push_str(D::NAME);
+        id
     }
 
     fn client_builder() -> <Self as ptrs::PluggableTransport<T>>::ClientBuilder {
@@ -59,8 +64,8 @@ where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     K: OKemCore + Send + Sync + 'static,
     D: Digest + Send + Sync + 'static,
-    <K as OKemCore>::EncapsulationKey: Send + Sync,
-    <K as OKemCore>::DecapsulationKey: Send + Sync,
+    <K as kemeleon::OKemCore>::EncapsulationKey: Send + Sync,
+    <K as kemeleon::OKemCore>::DecapsulationKey: Send + Sync,
 {
     type ServerPT = crate::Server<K, D>;
     type Error = Error;
@@ -115,8 +120,8 @@ where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     K: OKemCore + Send + Sync + 'static,
     D: Digest + Send + Sync + 'static,
-    <K as OKemCore>::EncapsulationKey: Send + Sync,
-    <K as OKemCore>::DecapsulationKey: Send + Sync,
+    <K as kemeleon::OKemCore>::EncapsulationKey: Send + Sync,
+    <K as kemeleon::OKemCore>::DecapsulationKey: Send + Sync,
 {
     type ClientPT = crate::Client<K, D>;
     type Error = Error;
@@ -205,8 +210,8 @@ where
     InErr: std::error::Error + Send + Sync + 'static,
     K: OKemCore + Send + Sync + 'static,
     D: Digest + Send + Sync + 'static,
-    <K as OKemCore>::EncapsulationKey: Send + Sync,
-    <K as OKemCore>::DecapsulationKey: Send + Sync,
+    <K as kemeleon::OKemCore>::EncapsulationKey: Send + Sync,
+    <K as kemeleon::OKemCore>::DecapsulationKey: Send + Sync,
 {
     type OutRW = O5Stream<InRW, K>;
     type OutErr = Error;
@@ -230,8 +235,8 @@ where
     InRW: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     K: OKemCore + Send + Sync + 'static,
     D: Digest + Send + Sync + 'static,
-    <K as OKemCore>::EncapsulationKey: Send + Sync,
-    <K as OKemCore>::DecapsulationKey: Send + Sync,
+    <K as kemeleon::OKemCore>::EncapsulationKey: Send + Sync,
+    <K as kemeleon::OKemCore>::DecapsulationKey: Send + Sync,
 {
     type OutRW = O5Stream<InRW, K>;
     type OutErr = Error;

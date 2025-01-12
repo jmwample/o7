@@ -6,13 +6,14 @@ use crate::{
         encrypt, Authcode, CHSMaterials, EphemeralPub, HandshakeEphemeralSecret,
         NtorV3Client as Client, SHSMaterials,
     },
+    traits::OKemCore,
     Digest, Result,
 };
 
 use bytes::{BufMut, BytesMut};
 use hmac::{Mac, SimpleHmac};
 use kem::Encapsulate;
-use kemeleon::{Encode, OKemCore};
+use kemeleon::Encode;
 use ptrs::trace;
 use rand::Rng;
 use rand_core::CryptoRngCore;
@@ -197,7 +198,7 @@ impl<D: Digest> ClientStateIncoming<D> {
 impl<K, D: Digest> ClientHandshakeMessage<K, ClientStateIncoming<D>>
 where
     K: OKemCore,
-    <K as OKemCore>::EncapsulationKey: Clone, // TODO: Is this necessary?
+    <K as kemeleon::OKemCore>::EncapsulationKey: Clone, // TODO: Is this necessary?
 {
     pub(crate) fn new(
         client_session_pubkey: EphemeralPub<K>,

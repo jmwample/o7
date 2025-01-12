@@ -37,13 +37,6 @@ macro_rules! transport_name {
 }
 pub(crate) use transport_name;
 
-macro_rules! type_name {
-    ($t:ty) => {
-        "{<$t>::NAME}"
-    };
-}
-pub(crate) use type_name;
-
 pub const TRANSPORT_NAME: &str = transport_name!();
 
 #[cfg(test)]
