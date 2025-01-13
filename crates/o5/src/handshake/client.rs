@@ -185,7 +185,7 @@ impl<K: OKemCore, D: Digest> NtorV3Client<K, D> {
     const AUTH_SIZE: usize = D::AUTH_SIZE;
     pub const CLIENT_MIN_HANDSHAKE_LENGTH: usize =
         K::EK_SIZE + K::CT_SIZE + D::MARK_SIZE + D::MAC_SIZE;
-    pub const CLIENT_MAX_PAD_LENGTH: usize = MAX_PACKET_LENGTH - Self::CLIENT_MIN_HANDSHAKE_LENGTH;
+    pub const CLIENT_MAX_PAD_LENGTH: usize = MAX_PAD_LENGTH - Self::CLIENT_MIN_HANDSHAKE_LENGTH;
 
     /// Client-side Ntor version 3 handshake, part one.
     ///

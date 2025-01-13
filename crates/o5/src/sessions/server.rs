@@ -131,13 +131,12 @@ impl ServerSession<Initialized> {
     {
         // set up for handshake
         let mut session = self.transition(ServerHandshaking {});
-
         let materials = SHSMaterials::new(session.session_id(), session.len_seed.to_bytes());
+        let handshake = server.new_handshake(materials);
+        let handshake_fut = handshake.complete_handshake(&mut stream, extensions_handler, deadline);
 
         // default deadline
         let d_def = Instant::now() + SERVER_HANDSHAKE_TIMEOUT;
-        let handshake_fut =
-            server.complete_handshake(&mut stream, extensions_handler, materials, deadline);
 
         let mut keygen =
             match tokio::time::timeout_at(deadline.unwrap_or(d_def), handshake_fut).await {
@@ -176,25 +175,31 @@ impl ServerSession<Initialized> {
 }
 
 impl<K: OKemCore, D: Digest> Server<K, D> {
+    ///
+    pub(crate) fn new_handshake(&self, materials: SHSMaterials) -> ServerHandshake<K, D> {
+        // clones the server Arc reference
+        ServerHandshake::new(self.clone(), materials)
+    }
+}
+
+impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
     /// Complete the handshake with the client. This function assumes that the
     /// client has already sent a message and that we do not know yet if the
     /// message is valid.
-    async fn complete_handshake<REPLY: AuxDataReply<ServerHandshake<K, D>>, T>(
+    async fn complete_handshake<REPLY: AuxDataReply<Self>, T>(
         &self,
         mut stream: T,
         reply_fn: &mut REPLY,
-        materials: SHSMaterials,
         deadline: Option<Instant>,
     ) -> Result<impl NtorV3KeyGen<ID = SessionID>>
     where
         T: AsyncRead + AsyncWrite + Unpin,
     {
-        let session_id = materials.session_id.clone();
+        let session_id = self.materials.session_id.clone();
 
         // wait for and attempt to consume the client hello message
         let mut buf = [0_u8; MAX_PACKET_LENGTH];
-        let server_hs = ServerHandshake::new(self.clone(), materials); // clones the server Arc reference
-                                                                       //
+        //
         loop {
             let n = stream.read(&mut buf).await?;
             if n == 0 {
@@ -204,7 +209,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
             trace!("{} successful read {n}B", session_id);
 
             let mut response = BytesMut::new();
-            match server_hs.server(reply_fn, &buf[..n], &mut response) {
+            match self.server(reply_fn, &buf[..n], &mut response) {
                 Ok(keygen) => {
                     stream.write_all(&response).await?;
                     info!("{} handshake complete", session_id);

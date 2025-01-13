@@ -40,7 +40,6 @@ pub struct ServerHandshakeMessage<K: OKemCore, D: Digest, S: ShsState> {
 /// State tracked when constructing and sending an outgoing server handshake
 pub struct ServerStateOutgoing<'a, D: Digest> {
     pub(crate) pad_len: usize,
-    // pub(crate) epoch_hour: String, // I don't think this needs stored by the server on send
     /// Ciphertext created as part of the KEM handshake where the server uses the encapsulation key
     /// sent by the client in the client hallo message to share a session shared secret.
     pub(crate) ephemeral_secret: HandshakeEphemeralSecret<D>,
@@ -288,6 +287,9 @@ where
         let node_encap_key = &self.state.hs_materials.node_pubkey.ek;
         let node_id = &self.state.hs_materials.node_pubkey.id;
         let (ciphertext, shared_secret) = node_encap_key.encapsulate(rng).map_err(to_tor_err)?;
+        let shared_secret = &shared_secret.as_bytes()[..];
+
+        trace!("id_pubkey: {}", hex::encode(&node_encap_key.as_bytes()[..]));
 
         // compute our ephemeral secret
         let mut f2 = SimpleHmac::<D>::new_from_slice(node_id.as_bytes())
@@ -295,19 +297,24 @@ where
 
         let ephemeral_secret = {
             f2.reset();
-            f2.update(&shared_secret.as_bytes()[..]);
+            f2.update(shared_secret);
             Zeroizing::new(f2.finalize_reset().into_bytes())
         };
+
+        trace!("shared secret: {}", hex::encode(shared_secret));
 
         // set up our hash fn
         let mut f1_es = SimpleHmac::<D>::new_from_slice(ephemeral_secret.as_ref())
             .expect("keying hmac should never fail");
 
+        let ek_bytes: &[u8] = &self.client_session_pubkey.as_bytes()[..];
+        let ct_bytes: &[u8] = &ciphertext.as_bytes()[..];
+
         // compute the Mark
         let mark = {
             f1_es.reset();
-            f1_es.update(&self.client_session_pubkey.as_bytes()[..]);
-            f1_es.update(&ciphertext.as_bytes()[..]);
+            f1_es.update(ek_bytes);
+            f1_es.update(ct_bytes);
             f1_es.update(CLIENT_MARK_ARG);
             f1_es.finalize_reset().into_bytes()
         };
@@ -327,8 +334,8 @@ where
         // Write EKco, CTco, MSG, P_C, M_C
         let hello_msg = {
             let mut hello_msg = Vec::new();
-            hello_msg.write(&self.client_session_pubkey.as_bytes()[..]);
-            hello_msg.write(&ciphertext.as_bytes()[..]);
+            hello_msg.write(ek_bytes);
+            hello_msg.write(ct_bytes);
             hello_msg.write(&encrypted_msg);
             hello_msg.write(&pad);
             hello_msg.write(&mark);

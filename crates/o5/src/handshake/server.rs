@@ -52,8 +52,8 @@ impl HandshakeMaterials {
 }
 
 pub(crate) struct ServerHandshake<K: OKemCore, D: Digest> {
-    materials: HandshakeMaterials,
-    server: Server<K, D>,
+    pub(crate) materials: HandshakeMaterials,
+    pub(crate) server: Server<K, D>,
 }
 
 impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
@@ -260,6 +260,12 @@ impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
             Err(RelayHandshakeError::EAgain)?;
         }
 
+        let server_identity_key = &self.server.identity_keys.sk;
+        trace!(
+            "id pubkey: {}",
+            hex::encode(&self.server.identity_keys.pk.ek.as_bytes()[..])
+        );
+
         // get the chunk containing the clients encapsulation key
         let mut client_ek_obfs = &buf[0..K::EK_SIZE];
 
@@ -269,12 +275,10 @@ impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
         // decode and decapsulate the secret encoded by the client
         let client_ct = <K as kemeleon::OKemCore>::Ciphertext::try_from_bytes(&client_ct_obfs)
             .map_err(|e| RelayHandshakeError::FailedParse)?;
-        let shared_secret_1 = self
-            .server
-            .identity_keys
-            .sk
+        let shared_secret = server_identity_key
             .decapsulate(&client_ct)
             .map_err(|e| RelayHandshakeError::FailedDecapsulation)?;
+        let shared_secret = &shared_secret.as_bytes()[..];
 
         let node_id = self.server.get_identity().id;
         let mut f2 = SimpleHmac::<D>::new_from_slice(node_id.as_bytes())
@@ -282,15 +286,19 @@ impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
 
         // Compute the Ephemeral Secret
         let ephemeral_secret = {
-            f2.update(&shared_secret_1.as_bytes()[..]);
+            f2.reset();
+            f2.update(shared_secret);
             Zeroizing::new(f2.finalize_reset().into_bytes())
         };
+
+        trace!("shared secret: {}", hex::encode(shared_secret));
 
         let mut f1_es = SimpleHmac::<Sha3_256>::new_from_slice(ephemeral_secret.as_ref())
             .expect("Keying server f1_es hmac should never fail");
 
         // derive the mark from the Ephemeral Secret
         let client_mark = {
+            f1_es.reset();
             f1_es.update(&client_ek_obfs);
             f1_es.update(&client_ct_obfs);
             f1_es.update(CLIENT_MARK_ARG);

@@ -312,7 +312,7 @@ mod test {
 
         let mut rep = |_: &[NtorV3Extension]| Some(vec![]);
 
-        let server = Server::<MlKem768, Sha3_256>::new_from_random(&mut thread_rng());
+        let server = Server::<MlKem768, Sha3_256>::new_from_key(relay_private);
         let shs_materials = SHSMaterials {
             len_seed: [0u8; SEED_LENGTH],
             session_id: "roundtrip_test_serverside".into(),
@@ -356,7 +356,7 @@ mod test {
             len_seed: [0u8; SEED_LENGTH],
             session_id: "roundtrip_test_serverside".into(),
         };
-        let server = Server::<MlKem768, Sha3_256>::new_from_random(&mut thread_rng());
+        let server = Server::<MlKem768, Sha3_256>::new_from_key(relay_private);
         let mut s_handshake = BytesMut::new();
         let s_keygen = ServerHandshake::new(server.clone(), shs_materials)
             .server(&mut rep, &c_handshake, &mut s_handshake)
