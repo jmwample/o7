@@ -5,6 +5,8 @@ use crate::{
     framing::{FrameError, MESSAGE_OVERHEAD},
 };
 
+mod prng_seed;
+
 use tokio_util::bytes::{Buf, BufMut};
 use tracing::trace;
 

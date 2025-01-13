@@ -6,12 +6,12 @@ use crate::{
     constants::*,
     framing,
     sessions::Session,
+    traits::OKemCore,
     Result,
 };
 
 use bytes::{Buf, BytesMut};
 use futures::{Sink, Stream};
-use kemeleon::OKemCore;
 use pin_project::pin_project;
 use ptrs::trace;
 use sha2::{Digest, Sha256};

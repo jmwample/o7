@@ -6,6 +6,7 @@ use crate::{
     },
     constants::*,
     framing::{O5Codec, KEY_MATERIAL_LENGTH},
+    traits::{FramingSizes, OKemCore},
     Error, Result,
 };
 
@@ -15,7 +16,7 @@ use base64::{
 };
 use hybrid_array::Array;
 use kem::{Decapsulate, Encapsulate};
-use kemeleon::{Encode, MlKem768, OKemCore};
+use kemeleon::Encode;
 use rand::{CryptoRng, RngCore};
 use subtle::{Choice, ConstantTimeEq};
 use tor_bytes::{EncodeResult, Readable, SecretBuf, Writeable, Writer};
@@ -26,7 +27,7 @@ use tor_llcrypto::{
 use typenum::Unsigned;
 
 /// Ephemeral single use session secret key type
-pub struct EphemeralKey<K: OKemCore>(<K as OKemCore>::DecapsulationKey);
+pub struct EphemeralKey<K: OKemCore>(<K as kemeleon::OKemCore>::DecapsulationKey);
 
 impl<K: OKemCore> EphemeralKey<K> {
     pub fn new(inner: K::DecapsulationKey) -> Self {
@@ -46,8 +47,10 @@ impl<K: OKemCore> Decapsulate<K::Ciphertext, K::SharedKey> for EphemeralKey<K> {
 }
 
 /// Public key type associated with EphemeralKey.
+/// TODO: WHY DO WE NEED THIS??
+///    if it was for `Readable` & `Writable` implementations --- meh we don't need that
 #[derive(Clone)]
-pub struct EphemeralPub<K: OKemCore>(<K as OKemCore>::EncapsulationKey);
+pub struct EphemeralPub<K: OKemCore>(<K as kemeleon::OKemCore>::EncapsulationKey);
 
 impl<K: OKemCore> EphemeralPub<K> {
     pub fn new(inner: K::EncapsulationKey) -> Self {
@@ -68,7 +71,8 @@ impl<K: OKemCore> Encapsulate<K::Ciphertext, K::SharedKey> for EphemeralPub<K> {
 
 impl<K: OKemCore> Encode for EphemeralPub<K> {
     type Error = <K::EncapsulationKey as Encode>::Error;
-    type EncodedSize = <K::EncapsulationKey as Encode>::EncodedSize;
+    type EncodedSize =
+        <<K as kemeleon::OKemCore>::EncapsulationKey as kemeleon::Encode>::EncodedSize;
 
     fn as_bytes(&self) -> ml_kem::array::Array<u8, Self::EncodedSize> {
         self.0.as_bytes()
@@ -94,9 +98,6 @@ impl<K: OKemCore> Writeable for EphemeralPub<K> {
     }
 }
 
-pub type IdentityKey = IdentitySecretKey<MlKem768>;
-pub type IdentityPub = IdentityPublicKey<MlKem768>;
-
 /// Key information about a relay used for the ntor v3 handshake.
 ///
 /// Contains a single curve25519 ntor onion key, and the relay's ed25519
@@ -106,14 +107,14 @@ pub struct IdentityPublicKey<K: OKemCore> {
     /// The relay's identity.
     pub(crate) id: Ed25519Identity,
     /// The relay's onion key.
-    pub(crate) ek: <K as OKemCore>::EncapsulationKey,
+    pub(crate) ek: <K as kemeleon::OKemCore>::EncapsulationKey,
 }
 
 impl<K: OKemCore> Clone for IdentityPublicKey<K> {
     fn clone(&self) -> Self {
         Self {
             id: self.id,
-            ek: <K as OKemCore>::EncapsulationKey::from(self.ek.clone()),
+            ek: <K as kemeleon::OKemCore>::EncapsulationKey::from(self.ek.clone()),
         }
     }
 }
@@ -134,7 +135,7 @@ impl<K: OKemCore> From<&IdentitySecretKey<K>> for IdentityPublicKey<K> {
 }
 
 impl<K: OKemCore> IdentityPublicKey<K> {
-    const CERT_LENGTH: usize = <K::EncapsulationKey as Encode>::EncodedSize::USIZE + ED25519_ID_LEN;
+    const CERT_LENGTH: usize = K::EK_SIZE + ED25519_ID_LEN;
     const CERT_SUFFIX: &'static str = "==";
 
     /// Construct a new IdentityPublicKey from its components.
@@ -154,7 +155,7 @@ impl<K: OKemCore> IdentityPublicKey<K> {
         }
         let id: [u8; NODE_ID_LENGTH] = arr[..ED25519_ID_LEN].try_into()?;
         let ek =
-            Array::<u8, <<K as OKemCore>::EncapsulationKey as Encode>::EncodedSize>::from_fn(|i| {
+            Array::<u8, <<K as kemeleon::OKemCore>::EncapsulationKey as Encode>::EncodedSize>::from_fn(|i| {
                 arr[ED25519_ID_LEN + i]
             });
         IdentityPublicKey::new(ek, id)
@@ -173,8 +174,7 @@ impl<K: OKemCore> std::str::FromStr for IdentityPublicKey<K> {
             return Err(format!("cert length {} is invalid", decoded.len()).into());
         }
         let id: [u8; NODE_ID_LENGTH] = decoded[..NODE_ID_LENGTH].try_into()?;
-        let ek: [u8; NODE_PUBKEY_LENGTH] = decoded[NODE_ID_LENGTH..].try_into()?;
-        IdentityPublicKey::new(ek, id)
+        IdentityPublicKey::new(&decoded[NODE_ID_LENGTH..], id)
     }
 }
 
@@ -198,13 +198,16 @@ pub struct IdentitySecretKey<K: OKemCore> {
     /// The relay's public key information
     pub(crate) pk: IdentityPublicKey<K>,
     /// The secret onion key.
-    pub(super) sk: <K as OKemCore>::DecapsulationKey,
+    pub(super) sk: <K as kemeleon::OKemCore>::DecapsulationKey,
 }
 
 impl<K: OKemCore> IdentitySecretKey<K> {
     /// Construct a new IdentitySecretKey from its components.
     #[allow(unused)]
-    pub(crate) fn new(sk: <K as OKemCore>::DecapsulationKey, id: Ed25519Identity) -> Self {
+    pub(crate) fn new(
+        sk: <K as kemeleon::OKemCore>::DecapsulationKey,
+        id: Ed25519Identity,
+    ) -> Self {
         Self {
             pk: IdentityPublicKey {
                 id,
@@ -243,7 +246,7 @@ impl<K: OKemCore> IdentitySecretKey<K> {
     pub(crate) fn matches(
         &self,
         id: Ed25519Identity,
-        ek: <K as OKemCore>::EncapsulationKey,
+        ek: <K as kemeleon::OKemCore>::EncapsulationKey,
     ) -> Choice {
         id.as_bytes().ct_eq(self.pk.id.as_bytes()) & ek.as_bytes().ct_eq(&self.pk.ek.as_bytes()[..])
     }
@@ -256,14 +259,14 @@ impl<K: OKemCore> TryFrom<&[u8]> for IdentitySecretKey<K> {
     }
 }
 
-// impl<K:OKemCore> Into<<K as OKemCore>::EncapsulationKey> for &IdentityPublicKey<K> {
-//     fn into(self) -> <K as OKemCore>::EncapsulationKey {
+// impl<K:OKemCore> Into<<K as kemeleon::OKemCore>::EncapsulationKey> for &IdentityPublicKey<K> {
+//     fn into(self) -> <K as kemeleon::OKemCore>::EncapsulationKey {
 //         self.ek.clone()
 //     }
 // }
 //
-// impl<K:OKemCore> Into<<K as OKemCore>::EncapsulationKey> for &IdentitySecretKey<K> {
-//     fn into(self) -> <K as OKemCore>::EncapsulationKey {
+// impl<K:OKemCore> Into<<K as kemeleon::OKemCore>::EncapsulationKey> for &IdentitySecretKey<K> {
+//     fn into(self) -> <K as kemeleon::OKemCore>::EncapsulationKey {
 //         self.pk.ek.clone()
 //     }
 // }
@@ -355,10 +358,6 @@ impl KeyGenerator for NtorV3XofReader {
         Ok(ret)
     }
 }
-
-/// Alias for an HMAC output, used to validate correctness of a handshake.
-pub(crate) type Authcode = [u8; 32];
-pub(crate) const AUTHCODE_LENGTH: usize = 32;
 
 // /// helper: compute a key generator and an authentication code from a set
 // /// of ntor parameters.
