@@ -1,8 +1,8 @@
-//! obfs4 session details and construction
+//! obfs5 session details and construction
 //!
 /// Session state management as a way to organize session establishment and
 /// steady state transfer.
-use crate::common::{drbg, mlkem1024_x25519};
+use crate::{common::drbg, traits::OKemCore, Digest};
 
 use tor_bytes::Readable;
 
@@ -11,20 +11,6 @@ pub(crate) use client::{new_client_session, ClientSession};
 
 mod server;
 pub(crate) use server::ServerSession;
-
-/// Ephermeral single use session secret key type
-pub type SessionSecretKey = mlkem1024_x25519::StaticSecret;
-
-/// Public key type associated with SessionSecretKey.
-pub type SessionPublicKey = mlkem1024_x25519::PublicKey;
-
-
-impl Readable for SessionPublicKey {
-    fn take_from(_b: &mut tor_bytes::Reader<'_>) -> tor_bytes::Result<Self> {
-        todo!("SessionPublicKey Reader needs implemented");
-    }
-}
-
 
 /// Initial state for a Session, created with any params.
 pub(crate) struct Initialized;
@@ -35,12 +21,12 @@ pub(crate) struct Established;
 /// The session broke due to something like a timeout, reset, lost connection, etc.
 trait Fault {}
 
-pub enum Session {
-    Client(ClientSession<Established>),
+pub enum Session<K: OKemCore> {
+    Client(ClientSession<Established, K>),
     Server(ServerSession<Established>),
 }
 
-impl Session {
+impl<K: OKemCore> Session<K> {
     #[allow(unused)]
     pub fn id(&self) -> String {
         match self {

@@ -1,10 +1,14 @@
 use crate::{test_utils::init_subscriber, Result, Server};
 
+use kemeleon::MlKem768;
 use ptrs::{debug, trace};
+use sha3::Sha3_256;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use std::cmp::Ordering;
 use std::time::Duration;
+
+pub(crate) type ServerMK768 = Server<MlKem768, Sha3_256>;
 
 #[tokio::test]
 async fn public_handshake() -> Result<()> {
@@ -12,7 +16,7 @@ async fn public_handshake() -> Result<()> {
     let (mut c, mut s) = tokio::io::duplex(65_536);
     let mut rng = rand::thread_rng();
 
-    let o4_server = Server::new_from_random(&mut rng);
+    let o4_server = ServerMK768::new_from_random(&mut rng);
     let client_config = o4_server.client_params();
 
     tokio::spawn(async move {
@@ -33,7 +37,7 @@ async fn public_iface() -> Result<()> {
     let (mut c, mut s) = tokio::io::duplex(65_536);
     let mut rng = rand::thread_rng();
 
-    let o4_server = Server::new_from_random(&mut rng);
+    let o4_server = ServerMK768::new_from_random(&mut rng);
     let client_config = o4_server.client_params();
 
     tokio::spawn(async move {
@@ -79,7 +83,7 @@ async fn transfer_10k_x1() -> Result<()> {
     let (c, mut s) = tokio::io::duplex(1024 * 1000);
     let mut rng = rand::thread_rng();
 
-    let o4_server = Server::new_from_random(&mut rng);
+    let o4_server = ServerMK768::new_from_random(&mut rng);
     let client_config = o4_server.client_params();
 
     tokio::spawn(async move {
@@ -132,7 +136,7 @@ async fn transfer_10k_x3() -> Result<()> {
     let (c, mut s) = tokio::io::duplex(1024 * 1000);
 
     let mut rng = rand::thread_rng();
-    let o4_server = Server::new_from_random(&mut rng);
+    let o4_server = ServerMK768::new_from_random(&mut rng);
     let client_config = o4_server.client_params();
 
     tokio::spawn(async move {
@@ -187,7 +191,7 @@ async fn transfer_1M_1024x1024() -> Result<()> {
     let (c, mut s) = tokio::io::duplex(1024 * 1000);
     let mut rng = rand::thread_rng();
 
-    let o4_server = Server::new_from_random(&mut rng);
+    let o4_server = ServerMK768::new_from_random(&mut rng);
     let client_config = o4_server.client_params();
 
     tokio::spawn(async move {
@@ -240,7 +244,7 @@ async fn transfer_512k_x1() -> Result<()> {
     let (c, mut s) = tokio::io::duplex(1024 * 512);
     let mut rng = rand::thread_rng();
 
-    let o4_server = Server::new_from_random(&mut rng);
+    let o4_server = ServerMK768::new_from_random(&mut rng);
     let client_config = o4_server.client_params();
 
     tokio::spawn(async move {
@@ -293,7 +297,7 @@ async fn transfer_2_x() -> Result<()> {
     let (c, mut s) = tokio::io::duplex(1024 * 1000);
     let mut rng = rand::thread_rng();
 
-    let o4_server = Server::new_from_random(&mut rng);
+    let o4_server = ServerMK768::new_from_random(&mut rng);
     let client_config = o4_server.client_params();
 
     tokio::spawn(async move {

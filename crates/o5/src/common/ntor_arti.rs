@@ -12,11 +12,9 @@
 //! for circuits on today's Tor.
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
-use crate::{
-    common::{colorize, mlkem1024_x25519},
-    Error, Result,
-};
-//use zeroize::Zeroizing;
+use crate::{common::colorize, Error, Result};
+
+use bytes::BufMut;
 use tor_bytes::SecretBuf;
 
 pub const SESSION_ID_LEN: usize = 8;
@@ -25,7 +23,7 @@ pub struct SessionID([u8; SESSION_ID_LEN]);
 
 impl core::fmt::Display for SessionID {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}]", colorize(hex::encode(&self.0)))
+        write!(f, "[{}]", colorize(hex::encode(self.0)))
     }
 }
 
@@ -70,26 +68,34 @@ pub trait ClientHandshake {
     type HandshakeMaterials: ClientHandshakeMaterials;
     /// The type for the state that the client holds while waiting for a reply.
     type StateType;
-    /// A type that is returned and used to generate session keys.x
-    type KeyGen;
     /// Type of extra data returned by server (without forward secrecy).
-    type ServerAuxData;
+    type HsOutput: ClientHandshakeComplete;
 
     /// Generate a new client onionskin for a relay with a given onion key,
     /// including `client_aux_data` to be sent without forward secrecy.
     ///
     /// On success, return a state object that will be used to
     /// complete the handshake, along with the message to send.
-    fn client1(materials: Self::HandshakeMaterials) -> Result<(Self::StateType, Vec<u8>)>;
+    fn client1<Out: BufMut>(
+        materials: Self::HandshakeMaterials,
+        out: &mut Out,
+    ) -> Result<Self::StateType>;
+
     /// Handle an onionskin from a relay, and produce aux data returned
     /// from the server, and a key generator.
     ///
     /// The state object must match the one that was used to make the
     /// client onionskin that the server is replying to.
-    fn client2<T: AsRef<[u8]>>(
-        state: Self::StateType,
-        msg: T,
-    ) -> Result<(Self::ServerAuxData, Self::KeyGen)>;
+    fn client2<T: AsRef<[u8]>>(state: &mut Self::StateType, msg: T) -> Result<(Self::HsOutput)>;
+}
+
+pub trait ClientHandshakeComplete {
+    type KeyGen;
+    type ServerAuxData;
+    type Remainder;
+    fn keygen(&self) -> Self::KeyGen;
+    fn extensions(&self) -> &Self::ServerAuxData;
+    fn remainder(&self) -> Self::Remainder;
 }
 
 /// Trait for an object that handles incoming auxiliary data and
@@ -121,9 +127,6 @@ where
 /// server onionskin. It is assumed that the (long term identity) keys are stored
 /// as part of the object implementing this trait.
 pub(crate) trait ServerHandshake {
-    /// Custom parameters used per handshake rather than long lived config stored
-    /// in the object implementing this trait.
-    type HandshakeParams;
     /// The returned key generator type.
     type KeyGen;
     /// Type of extra data sent from client (without forward secrecy).
@@ -140,12 +143,12 @@ pub(crate) trait ServerHandshake {
     ///
     /// The self parameter is a type / struct for (potentially shared) state
     /// accessible during the server handshake.
-    fn server<REPLY: AuxDataReply<Self>, T: AsRef<[u8]>>(
+    fn server<REPLY: AuxDataReply<Self>, T: AsRef<[u8]>, Out: BufMut>(
         &self,
         reply_fn: &mut REPLY,
-        materials: &Self::HandshakeParams,
         msg: T,
-    ) -> RelayHandshakeResult<(Self::KeyGen, Vec<u8>)>;
+        reply_buf: &mut Out,
+    ) -> RelayHandshakeResult<Self::KeyGen>;
 }
 
 /// A KeyGenerator is returned by a handshake, and used to generate
@@ -195,13 +198,9 @@ pub enum RelayHandshakeError {
     #[error("try again with updated input")]
     EAgain,
 
-    /// An error in parsing  a handshake message.
+    /// An error in parsing a handshake message.
     #[error("Problem decoding onion handshake")]
     Fmt(#[from] tor_bytes::Error),
-
-    /// Error happened during cryptographic handshake
-    #[error("")]
-    CryptoError(mlkem1024_x25519::EncodeError),
 
     /// The client asked for a key we didn't have.
     #[error("Client asked for a key or ID that we don't have")]
@@ -216,12 +215,35 @@ pub enum RelayHandshakeError {
     #[error("Bad handshake from server")]
     BadServerHandshake,
 
+    /// The handshake response from the server contained an auth value that does not
+    /// match the expected computed auth value. Either an error occurred or someone
+    /// is trying to mitm the connection. Handshake fails.
+    #[error("server handshake has incorrect auth value")]
+    ServerAuthMismatch,
+
     /// The client's handshake matched a previous handshake indicating a potential replay attack.
     #[error("Handshake from client was seen recently -- potentially replayed.")]
     ReplayedHandshake,
 
-    /// Error occured while creating a frame.
-    #[error("Problem occured while building handshake")]
+    /// Cryptography error occurred while performing the handshake
+    // I think this could happen when someone tries to connect with a valid client, but invalid
+    // identity key. I am not sure about that though. TODO: add test
+    #[error("Failed to decapsulate a message despite finding the mark and validating the MAC")]
+    FailedDecapsulation,
+
+    /// Cryptography error occurred while performing the server handshake
+    // This should never happen in production, but could happen in dev environments, tests, or custom
+    // implementations.
+    #[error("Failed to encapsulate a shared secret. Likely a bug in the OKEM impl or a bad rng")]
+    FailedEncapsulation,
+
+    /// Encountered an Error while attempting to parse a cryptographic value (key / ciphertext)
+    // TODO: add test
+    #[error("Failed to parse cryptographic value")]
+    FailedParse,
+
+    /// Error occurred while creating a frame.
+    #[error("Problem occurred while building handshake")]
     FrameError(String),
 
     /// An internal error.

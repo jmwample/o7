@@ -103,7 +103,7 @@ impl<T> ServerBuilder<T> {
         params.encode_smethod_args()
     }
 
-    pub fn build(&self) -> Server {
+    pub fn build(self) -> Server {
         Server(Arc::new(ServerInner {
             identity_keys: self.identity_keys.clone(),
             iat_mode: self.iat_mode,

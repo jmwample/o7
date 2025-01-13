@@ -442,16 +442,14 @@ where
     let mut listeners = Vec::new();
 
     let mut builder = Obfs4PT::server_builder();
-    let server = if params.is_some() {
-        builder.options(&params.unwrap())?.build()
-    } else {
-        builder.build()
-    };
+    if params.is_some() {
+        builder.options(&params.unwrap())?;
+    }
 
-    info!(
-        "({obfs4_name}) client params: \"{}\"",
-        builder.get_client_params()
-    );
+    let client_options = builder.get_client_params();
+    let server = builder.build();
+
+    info!("({obfs4_name}) client params: \"{}\"", client_options);
 
     let listener = tokio::net::TcpListener::bind(listen_addrs).await?;
     listeners.push(server_listen_loop::<TcpStream, _, _>(

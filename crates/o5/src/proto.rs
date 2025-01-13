@@ -6,6 +6,7 @@ use crate::{
     constants::*,
     framing,
     sessions::Session,
+    traits::OKemCore,
     Result,
 };
 
@@ -59,20 +60,22 @@ impl MaybeTimeout {
 /// ciphertext results in decrypted planitext.
 ///
 /// TODO: this needs significantly more documentation
-pub struct O5Stream<T>
+pub struct O5Stream<T, K>
 where
     T: AsyncRead + AsyncWrite + Unpin,
+    K: OKemCore,
 {
     // s: Arc<Mutex<O4Stream<'a, T>>>,
     #[pin]
-    s: ObfuscatedStream<T>,
+    s: ObfuscatedStream<T, K>,
 }
 
-impl<T> O5Stream<T>
+impl<T, K> O5Stream<T, K>
 where
     T: AsyncRead + AsyncWrite + Unpin,
+    K: OKemCore,
 {
-    pub(crate) fn from_o4(os: ObfuscatedStream<T>) -> Self {
+    pub(crate) fn from_o4(os: ObfuscatedStream<T, K>) -> Self {
         O5Stream {
             // s: Arc::new(Mutex::new(o4)),
             s: os,
@@ -81,9 +84,10 @@ where
 }
 
 #[pin_project]
-pub(crate) struct ObfuscatedStream<T>
+pub(crate) struct ObfuscatedStream<T, K>
 where
     T: AsyncRead + AsyncWrite + Unpin,
+    K: OKemCore,
 {
     #[pin]
     pub stream: Framed<T, framing::O5Codec>,
@@ -91,18 +95,19 @@ where
     pub length_dist: probdist::WeightedDist,
     pub ipt_dist: probdist::WeightedDist,
 
-    pub session: Session,
+    pub session: Session<K>,
 }
 
-impl<T> ObfuscatedStream<T>
+impl<T, K> ObfuscatedStream<T, K>
 where
     T: AsyncRead + AsyncWrite + Unpin,
+    K: OKemCore,
 {
     pub(crate) fn new(
         // inner: &'a mut dyn Stream<'a>,
         inner: T,
         codec: framing::O5Codec,
-        session: Session,
+        session: Session<K>,
     ) -> Self {
         let stream = Framed::new(inner, codec);
         let len_seed = session.len_seed();
@@ -187,9 +192,10 @@ where
     } */
 }
 
-impl<T> AsyncWrite for ObfuscatedStream<T>
+impl<T, K> AsyncWrite for ObfuscatedStream<T, K>
 where
     T: AsyncRead + AsyncWrite + Unpin,
+    K: OKemCore,
 {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -258,9 +264,10 @@ where
     }
 }
 
-impl<T> AsyncRead for ObfuscatedStream<T>
+impl<T, K> AsyncRead for ObfuscatedStream<T, K>
 where
     T: AsyncRead + AsyncWrite + Unpin,
+    K: OKemCore,
 {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -308,9 +315,10 @@ where
     }
 }
 
-impl<T> AsyncWrite for O5Stream<T>
+impl<T, K> AsyncWrite for O5Stream<T, K>
 where
     T: AsyncRead + AsyncWrite + Unpin,
+    K: OKemCore,
 {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -332,9 +340,10 @@ where
     }
 }
 
-impl<T> AsyncRead for O5Stream<T>
+impl<T, K> AsyncRead for O5Stream<T, K>
 where
     T: AsyncRead + AsyncWrite + Unpin,
+    K: OKemCore,
 {
     fn poll_read(
         self: Pin<&mut Self>,

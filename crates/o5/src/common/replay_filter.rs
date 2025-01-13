@@ -245,7 +245,7 @@ mod test {
                 f.filter.len()
             );
             assert!(
-                !f.test_and_set(now, &format!("message-1{i}")),
+                !f.test_and_set(now, format!("message-1{i}")),
                 "unique message failed insert (returned true)"
             );
         }

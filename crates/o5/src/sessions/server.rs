@@ -2,20 +2,22 @@ use crate::{
     common::{
         discard, drbg,
         ntor_arti::{
-            AuxDataReply, RelayHandshakeError, ServerHandshake, SessionID, SessionIdentifier,
+            AuxDataReply, RelayHandshakeError, ServerHandshake as _, SessionID, SessionIdentifier,
         },
     },
     constants::*,
     framing,
-    handshake::{NtorV3KeyGen, SHSMaterials},
+    handshake::{NtorV3KeyGen, SHSMaterials, ServerHandshake},
     proto::{O5Stream, ObfuscatedStream},
     server::Server,
     sessions::{Established, Fault, Initialized, Session},
-    Error, Result,
+    traits::OKemCore,
+    Digest, Error, Result,
 };
 
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
+use bytes::BytesMut;
 use ptrs::{debug, info, trace};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::Instant;
@@ -115,25 +117,26 @@ impl<S: ServerSessionState> ServerSession<S> {
 
 impl ServerSession<Initialized> {
     /// Attempt to complete the handshake with a new client connection.
-    pub async fn handshake<REPLY: AuxDataReply<Server>, T>(
+    pub async fn handshake<T, K, D>(
         self,
-        server: &Server,
+        server: &Server<K, D>,
         mut stream: T,
-        extensions_handler: &mut REPLY,
+        extensions_handler: &mut impl AuxDataReply<ServerHandshake<K, D>>,
         deadline: Option<Instant>,
-    ) -> Result<O5Stream<T>>
+    ) -> Result<O5Stream<T, K>>
     where
         T: AsyncRead + AsyncWrite + Unpin,
+        K: OKemCore,
+        D: Digest,
     {
         // set up for handshake
         let mut session = self.transition(ServerHandshaking {});
-
         let materials = SHSMaterials::new(session.session_id(), session.len_seed.to_bytes());
+        let handshake = server.new_handshake(materials);
+        let handshake_fut = handshake.complete_handshake(&mut stream, extensions_handler, deadline);
 
         // default deadline
         let d_def = Instant::now() + SERVER_HANDSHAKE_TIMEOUT;
-        let handshake_fut =
-            server.complete_handshake(&mut stream, extensions_handler, materials, deadline);
 
         let mut keygen =
             match tokio::time::timeout_at(deadline.unwrap_or(d_def), handshake_fut).await {
@@ -171,7 +174,15 @@ impl ServerSession<Initialized> {
     }
 }
 
-impl Server {
+impl<K: OKemCore, D: Digest> Server<K, D> {
+    ///
+    pub(crate) fn new_handshake(&self, materials: SHSMaterials) -> ServerHandshake<K, D> {
+        // clones the server Arc reference
+        ServerHandshake::new(self.clone(), materials)
+    }
+}
+
+impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
     /// Complete the handshake with the client. This function assumes that the
     /// client has already sent a message and that we do not know yet if the
     /// message is valid.
@@ -179,16 +190,16 @@ impl Server {
         &self,
         mut stream: T,
         reply_fn: &mut REPLY,
-        materials: SHSMaterials,
         deadline: Option<Instant>,
     ) -> Result<impl NtorV3KeyGen<ID = SessionID>>
     where
         T: AsyncRead + AsyncWrite + Unpin,
     {
-        let session_id = materials.session_id.clone();
+        let session_id = self.materials.session_id.clone();
 
         // wait for and attempt to consume the client hello message
-        let mut buf = [0_u8; MAX_HANDSHAKE_LENGTH];
+        let mut buf = [0_u8; MAX_PACKET_LENGTH];
+        //
         loop {
             let n = stream.read(&mut buf).await?;
             if n == 0 {
@@ -197,8 +208,9 @@ impl Server {
             }
             trace!("{} successful read {n}B", session_id);
 
-            match self.server(reply_fn, &materials, &buf[..n]) {
-                Ok((keygen, response)) => {
+            let mut response = BytesMut::new();
+            match self.server(reply_fn, &buf[..n], &mut response) {
+                Ok(keygen) => {
                     stream.write_all(&response).await?;
                     info!("{} handshake complete", session_id);
                     return Ok(keygen);

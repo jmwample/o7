@@ -1,6 +1,5 @@
-#![allow(unused)]
+#![allow(unused)] // TODO: Remove this
 
-use super::*;
 use crate::{
     client::ClientBuilder,
     common::{
@@ -12,11 +11,10 @@ use crate::{
     framing::{FrameError, Marshall, O5Codec, TryParse, KEY_LENGTH},
     handshake::{IdentityPublicKey, IdentitySecretKey},
     proto::{MaybeTimeout, O5Stream},
-    sessions::Session,
-    Error, Result,
+    sessions::{Initialized, ServerSession, Session},
+    traits::{DigestSizes, FramingSizes, OKemCore},
+    transport_name, Digest, Error, Result,
 };
-use ptrs::args::Args;
-use tor_cell::relaycell::extend::NtorV3Extension;
 
 use std::{
     borrow::BorrowMut, marker::PhantomData, ops::Deref, str::FromStr, string::ToString, sync::Arc,
@@ -25,40 +23,43 @@ use std::{
 use bytes::{Buf, BufMut, Bytes};
 use hex::FromHex;
 use hmac::{Hmac, Mac};
-use ptrs::{debug, info};
+use ptrs::{args::Args, debug, info};
 use rand::prelude::*;
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
 use tokio_util::codec::Encoder;
+use tor_cell::relaycell::extend::NtorV3Extension;
 
-const STATE_FILENAME: &str = "obfs4_state.json";
+const STATE_FILENAME: &str = "o5_state.json";
 
-pub struct ServerBuilder<T> {
+pub struct ServerBuilder<T, K: OKemCore, D: Digest> {
     pub statefile_path: Option<String>,
-    pub(crate) identity_keys: IdentitySecretKey,
+    pub(crate) identity_keys: IdentitySecretKey<K>,
     pub(crate) handshake_timeout: MaybeTimeout,
     // pub(crate) drbg: Drbg, // TODO: build in DRBG
     _stream_type: PhantomData<T>,
+    _digest_type: PhantomData<D>,
 }
 
-impl<T> Default for ServerBuilder<T> {
+impl<T, K: OKemCore, D: Digest> Default for ServerBuilder<T, K, D> {
     fn default() -> Self {
-        let identity_keys = IdentitySecretKey::random_from_rng(&mut rand::thread_rng());
+        let identity_keys = IdentitySecretKey::<K>::random_from_rng(&mut rand::thread_rng());
         Self {
             statefile_path: None,
             identity_keys,
             handshake_timeout: MaybeTimeout::Default_,
             _stream_type: PhantomData,
+            _digest_type: PhantomData,
         }
     }
 }
 
-impl<T> ServerBuilder<T> {
+impl<T, K: OKemCore, D: Digest> ServerBuilder<T, K, D> {
     /// 64 byte combined representation of an x25519 public key, private key
     /// combination.
     pub fn node_keys(&mut self, keys: impl AsRef<[u8]>) -> Result<&Self> {
-        let sk = IdentitySecretKey::try_from(keys.as_ref())?;
+        let sk = IdentitySecretKey::<K>::try_from(keys.as_ref())?;
         self.identity_keys = sk;
         Ok(self)
     }
@@ -94,19 +95,20 @@ impl<T> ServerBuilder<T> {
         params.encode_smethod_args()
     }
 
-    pub fn build(self) -> Server {
-        Server(Arc::new(ServerInner {
+    pub fn build(self) -> Server<K, D> {
+        Server::<K, D>(Arc::new(ServerCore::<K, D> {
             identity_keys: self.identity_keys,
             biased: false,
             handshake_timeout: self.handshake_timeout.duration(),
 
             // metrics: Arc::new(std::sync::Mutex::new(ServerMetrics {})),
             replay_filter: ReplayFilter::new(REPLAY_TTL),
+            _digest_type: PhantomData::<D>,
         }))
     }
 
     pub fn validate_args(args: &Args) -> Result<()> {
-        let _ = RequiredServerState::try_from(args)?;
+        let _ = RequiredServerState::<K>::try_from(args)?;
 
         Ok(())
     }
@@ -114,20 +116,20 @@ impl<T> ServerBuilder<T> {
     pub(crate) fn parse_state(
         statedir: Option<impl AsRef<str>>,
         args: &Args,
-    ) -> Result<RequiredServerState> {
+    ) -> Result<RequiredServerState<K>> {
         if statedir.is_none() {
-            return RequiredServerState::try_from(args);
+            return RequiredServerState::<K>::try_from(args);
         }
 
         // if the provided arguments do not satisfy all required arguments, we
         // attempt to parse the server state from json IFF a statedir path was
         // provided. Otherwise this method just fails.
         let mut required_args = args.clone();
-        match RequiredServerState::try_from(args) {
+        match RequiredServerState::<K>::try_from(args) {
             Ok(state) => Ok(state),
             Err(e) => {
                 Self::server_state_from_file(statedir.unwrap(), &mut required_args)?;
-                RequiredServerState::try_from(&required_args)
+                RequiredServerState::<K>::try_from(&required_args)
             }
         }
     }
@@ -179,12 +181,12 @@ impl JsonServerState {
     }
 }
 
-pub(crate) struct RequiredServerState {
-    pub(crate) private_key: IdentitySecretKey,
+pub(crate) struct RequiredServerState<K: OKemCore> {
+    pub(crate) private_key: IdentitySecretKey<K>,
     pub(crate) drbg_seed: drbg::Drbg,
 }
 
-impl TryFrom<&Args> for RequiredServerState {
+impl<K: OKemCore> TryFrom<&Args> for RequiredServerState<K> {
     type Error = Error;
     fn try_from(value: &Args) -> std::prelude::v1::Result<Self, Self::Error> {
         let privkey_str = value
@@ -202,9 +204,9 @@ impl TryFrom<&Args> for RequiredServerState {
             .ok_or("missing argument {NODE_ID_ARG}")?;
         let node_id = <[u8; NODE_ID_LENGTH]>::from_hex(node_id_str)?;
 
-        let private_key = IdentitySecretKey::try_from_bytes(sk)?;
+        let private_key = IdentitySecretKey::<K>::try_from_bytes(sk)?;
 
-        Ok(RequiredServerState {
+        Ok(RequiredServerState::<K> {
             private_key,
             drbg_seed: drbg::Drbg::new(Some(drbg_seed))?,
         })
@@ -212,53 +214,60 @@ impl TryFrom<&Args> for RequiredServerState {
 }
 
 #[derive(Clone)]
-pub struct Server(Arc<ServerInner>);
+pub struct Server<K: OKemCore, D: Digest>(Arc<ServerCore<K, D>>);
 
-pub struct ServerInner {
+pub struct ServerCore<K: OKemCore, D: Digest> {
     pub(crate) handshake_timeout: Option<tokio::time::Duration>,
     pub(crate) biased: bool,
-    pub(crate) identity_keys: IdentitySecretKey,
+    pub(crate) identity_keys: IdentitySecretKey<K>,
 
     pub(crate) replay_filter: ReplayFilter,
-    // pub(crate) metrics: Metrics,
+
+    _digest_type: PhantomData<D>,
 }
 
-impl Deref for Server {
-    type Target = ServerInner;
+impl<K: OKemCore, D: Digest> Deref for Server<K, D> {
+    type Target = ServerCore<K, D>;
     fn deref(&self) -> &Self::Target {
         self.0.as_ref()
     }
 }
 
-impl Server {
-    pub fn new(identity: IdentitySecretKey) -> Self {
+impl<K: OKemCore, D: Digest> Server<K, D> {
+    pub(crate) const CT_SIZE: usize = K::CT_SIZE;
+    pub(crate) const EK_SIZE: usize = K::EK_SIZE;
+    pub(crate) const AUTH_SIZE: usize = D::AUTH_SIZE;
+    pub const SERVER_MIN_HANDSHAKE_LENGTH: usize =
+        K::CT_SIZE + D::AUTH_SIZE + D::MARK_SIZE + D::MAC_SIZE;
+    pub const SERVER_MAX_PAD_LENGTH: usize = MAX_PAD_LENGTH - Self::SERVER_MIN_HANDSHAKE_LENGTH;
+
+    pub fn new(identity: IdentitySecretKey<K>) -> Self {
         Self::new_from_key(identity)
     }
 
-    pub(crate) fn new_from_key(identity_keys: IdentitySecretKey) -> Self {
-        Self(Arc::new(ServerInner {
+    pub(crate) fn new_from_key(identity_keys: IdentitySecretKey<K>) -> Self {
+        Self(Arc::new(ServerCore {
             handshake_timeout: Some(SERVER_HANDSHAKE_TIMEOUT),
             identity_keys,
             biased: false,
 
             // metrics: Arc::new(std::sync::Mutex::new(ServerMetrics {})),
             replay_filter: ReplayFilter::new(REPLAY_TTL),
+            _digest_type: PhantomData::<D>,
         }))
     }
 
     pub fn new_from_random<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
         let mut id = [0_u8; 20];
 
-        // Generated identity secret key does not need to be elligator2 representable
-        // so we can use the regular dalek_x25519 key generation.
-        let identity_keys = IdentitySecretKey::random_from_rng(rng);
+        let identity_keys = IdentitySecretKey::<K>::random_from_rng(rng);
 
-        let pk = IdentityPublicKey::from(&identity_keys);
+        let pk = IdentityPublicKey::<K>::from(&identity_keys);
 
         Self::new_from_key(identity_keys)
     }
 
-    pub async fn wrap<T>(self, stream: T) -> Result<O5Stream<T>>
+    pub async fn wrap<T>(self, stream: T) -> Result<O5Stream<T, K>>
     where
         T: AsyncRead + AsyncWrite + Unpin,
     {
@@ -283,23 +292,19 @@ impl Server {
         Err(Error::NotImplemented)
     }
 
-    pub fn client_params(&self) -> ClientBuilder {
-        ClientBuilder {
-            // these unwraps should be safe as we are sure of the size of the source
-            station_pubkey: self.identity_keys.pk.pk.as_bytes().try_into().unwrap(),
-            station_id: self.identity_keys.pk.id.as_bytes().try_into().unwrap(),
-
+    pub fn client_params(&self) -> ClientBuilder<K, D> {
+        ClientBuilder::<K, D> {
+            node_details: Some(self.identity_keys.pk.clone()),
             statefile_path: None,
             handshake_timeout: MaybeTimeout::Default_,
+            _digest: PhantomData::<D>,
         }
     }
 
-    pub(crate) fn new_server_session(
-        &self,
-    ) -> Result<sessions::ServerSession<sessions::Initialized>> {
+    pub(crate) fn new_server_session(&self) -> Result<ServerSession<Initialized>> {
         let mut session_id = [0u8; SESSION_ID_LEN];
         rand::thread_rng().fill_bytes(&mut session_id);
-        Ok(sessions::ServerSession {
+        Ok(ServerSession {
             // fixed by server
             biased: self.biased,
 
@@ -308,8 +313,21 @@ impl Server {
             len_seed: drbg::Seed::new().unwrap(),
             ipt_seed: drbg::Seed::new().unwrap(),
 
-            _state: sessions::Initialized {},
+            _state: Initialized {},
         })
+    }
+
+    pub(crate) fn get_identity(&self) -> IdentityPublicKey<K> {
+        self.identity_keys.pk.clone()
+    }
+
+    pub(crate) fn protocol_id<'a>() -> String {
+        let mut id = transport_name!().to_owned();
+        id.push('_');
+        id.push_str(K::NAME);
+        id.push('_');
+        id.push_str(D::NAME);
+        id
     }
 }
 
@@ -319,7 +337,9 @@ mod tests {
 
     use super::*;
 
+    use kemeleon::MlKem768;
     use ptrs::trace;
+    use sha3::Sha3_256;
     use tokio::net::TcpStream;
 
     use crate::test_utils::init_subscriber;
@@ -332,7 +352,10 @@ mod tests {
         let test_state = format!(
             r#"{{"{NODE_ID_ARG}": "00112233445566778899", "{PRIVATE_KEY_ARG}":"0123456789abcdeffedcba9876543210", "{SEED_ARG}": "abcdefabcdefabcdefabcdef"}}"#
         );
-        ServerBuilder::<TcpStream>::server_state_from_json(test_state.as_bytes(), &mut args)?;
+        ServerBuilder::<TcpStream, MlKem768, Sha3_256>::server_state_from_json(
+            test_state.as_bytes(),
+            &mut args,
+        )?;
         debug!("{:?}\n{}", args.encode_smethod_args(), test_state);
 
         Ok(())

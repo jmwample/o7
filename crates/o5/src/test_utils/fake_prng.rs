@@ -6,7 +6,7 @@ impl<'a> FakePRNG<'a> {
         Self { bytes }
     }
 }
-impl<'a> rand_core::RngCore for FakePRNG<'a> {
+impl rand_core::RngCore for FakePRNG<'_> {
     fn next_u32(&mut self) -> u32 {
         rand_core::impls::next_u32_via_fill(self)
     }

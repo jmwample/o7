@@ -1,19 +1,30 @@
 use crate::{
     common::{
         discard, drbg,
-        ntor_arti::{ClientHandshake, RelayHandshakeError, SessionID, SessionIdentifier},
+        ntor_arti::{
+            ClientHandshake, ClientHandshakeComplete, RelayHandshakeError, SessionID,
+            SessionIdentifier,
+        },
     },
     constants::*,
-    framing,
-    handshake::{CHSMaterials, IdentityPublicKey, NtorV3Client, NtorV3KeyGen},
+    framing::{Messages, O5Codec},
+    handshake::{
+        CHSMaterials, ClientHsComplete, IdentityPublicKey, NtorV3Client, NtorV3KeyGen,
+        NtorV3KeyGenerator,
+    },
     proto::{O5Stream, ObfuscatedStream},
     sessions::{Established, Fault, Initialized, Session},
-    Error, Result,
+    traits::OKemCore,
+    Digest, Error, Result,
 };
 
-use std::io::{Error as IoError, ErrorKind as IoErrorKind};
+use std::{
+    io::{Error as IoError, ErrorKind as IoErrorKind},
+    marker::PhantomData,
+};
 
-use bytes::BytesMut;
+use bytes::{BufMut, BytesMut};
+use kemeleon::Encode;
 use ptrs::{debug, info};
 use rand_core::RngCore;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -24,8 +35,8 @@ use tokio_util::codec::Decoder;
 //                       Client States                              //
 // ================================================================ //
 
-pub(crate) struct ClientSession<S: ClientSessionState> {
-    node_pubkey: IdentityPublicKey,
+pub(crate) struct ClientSession<S: ClientSessionState, K: OKemCore> {
+    node_pubkey: IdentityPublicKey<K>,
     session_id: SessionID,
     epoch_hour: String,
 
@@ -51,7 +62,7 @@ impl ClientSessionState for Established {}
 impl ClientSessionState for ClientHandshakeFailed {}
 impl Fault for ClientHandshakeFailed {}
 
-impl<S: ClientSessionState> ClientSession<S> {
+impl<S: ClientSessionState, K: OKemCore> ClientSession<S, K> {
     pub fn session_id(&self) -> String {
         String::from("c-") + &self.session_id.to_string()
     }
@@ -70,7 +81,7 @@ impl<S: ClientSessionState> ClientSession<S> {
     }
 
     /// Helper function to perform state transitions.
-    fn transition<T: ClientSessionState>(self, t: T) -> ClientSession<T> {
+    fn transition<T: ClientSessionState>(self, t: T) -> ClientSession<T, K> {
         ClientSession {
             node_pubkey: self.node_pubkey,
             session_id: self.session_id,
@@ -83,7 +94,7 @@ impl<S: ClientSessionState> ClientSession<S> {
     }
 
     /// Helper function to perform state transitions.
-    fn fault<F: Fault + ClientSessionState>(self, f: F) -> ClientSession<F> {
+    fn fault<F: Fault + ClientSessionState>(self, f: F) -> ClientSession<F, K> {
         ClientSession {
             node_pubkey: self.node_pubkey,
             session_id: self.session_id,
@@ -96,7 +107,9 @@ impl<S: ClientSessionState> ClientSession<S> {
     }
 }
 
-pub fn new_client_session(station_pubkey: IdentityPublicKey) -> ClientSession<Initialized> {
+pub fn new_client_session<K: OKemCore>(
+    station_pubkey: IdentityPublicKey<K>,
+) -> ClientSession<Initialized, K> {
     let mut session_id = [0u8; SESSION_ID_LEN];
     rand::thread_rng().fill_bytes(&mut session_id);
     ClientSession {
@@ -110,7 +123,7 @@ pub fn new_client_session(station_pubkey: IdentityPublicKey) -> ClientSession<In
     }
 }
 
-impl ClientSession<Initialized> {
+impl<K: OKemCore> ClientSession<Initialized, K> {
     /// Perform a Handshake over the provided stream.
     ///
     /// Completes the client handshake including sending the initial hello message
@@ -131,9 +144,14 @@ impl ClientSession<Initialized> {
     /// - response fails server auth check
     ///
     /// TODO: make sure failure modes are understood (FIN/RST w/ and w/out buffered data, etc.)
-    pub async fn handshake<T>(self, mut stream: T, deadline: Option<Instant>) -> Result<O5Stream<T>>
+    pub async fn handshake<T, D>(
+        self,
+        mut stream: T,
+        deadline: Option<Instant>,
+    ) -> Result<O5Stream<T, K>>
     where
         T: AsyncRead + AsyncWrite + Unpin,
+        D: Digest,
     {
         // set up for handshake
         let mut session = self.transition(ClientHandshaking {});
@@ -142,8 +160,8 @@ impl ClientSession<Initialized> {
 
         // default deadline
         let d_def = Instant::now() + CLIENT_HANDSHAKE_TIMEOUT;
-        let handshake_fut = Self::complete_handshake(&mut stream, materials, deadline);
-        let (mut remainder, mut keygen) =
+        let handshake_fut = Self::complete_handshake::<T, D>(stream, materials, deadline);
+        let (mut hs_complete, mut stream) =
             match tokio::time::timeout_at(deadline.unwrap_or(d_def), handshake_fut).await {
                 Ok(result) => match result {
                     Ok(handshake) => handshake,
@@ -166,11 +184,17 @@ impl ClientSession<Initialized> {
             };
 
         // post-handshake state updates
+        let mut keygen: NtorV3KeyGenerator = hs_complete.keygen();
         session.set_session_id(keygen.session_id());
-        let mut codec: framing::O5Codec = keygen.into();
+        let mut codec: O5Codec = keygen.into();
 
-        let res = codec.decode(&mut remainder);
-        if let Ok(Some(framing::Messages::PrngSeed(seed))) = res {
+        // // TODO: handle server response extensions here
+        // for ext in hs_complete.extensions() {
+        //      // do something
+        // }
+
+        let res = codec.decode(&mut hs_complete.remainder());
+        if let Ok(Some(Messages::PrngSeed(seed))) = res {
             // try to parse the remainder of the server hello packet as a
             // PrngSeed since it should be there.
             let len_seed = drbg::Seed::from(seed);
@@ -180,7 +204,7 @@ impl ClientSession<Initialized> {
         }
 
         // mark session as Established
-        let session_state: ClientSession<Established> = session.transition(Established {});
+        let session_state: ClientSession<Established, K> = session.transition(Established {});
         info!("{} handshake complete", session_state.session_id());
 
         codec.handshake_complete();
@@ -189,27 +213,32 @@ impl ClientSession<Initialized> {
         Ok(O5Stream::from_o4(o4))
     }
 
-    async fn complete_handshake<T>(
+    async fn complete_handshake<T, D>(
         mut stream: T,
-        materials: CHSMaterials,
+        materials: CHSMaterials<K>,
         deadline: Option<Instant>,
-    ) -> Result<(BytesMut, impl NtorV3KeyGen<ID = SessionID>)>
+    ) -> Result<(
+        impl ClientHandshakeComplete<Remainder = BytesMut, KeyGen = NtorV3KeyGenerator>,
+        T,
+    )>
     where
         T: AsyncRead + AsyncWrite + Unpin,
+        D: Digest,
     {
         // let session_id = materials.session_id;
-        let (state, chs_message) = NtorV3Client::client1(materials)?;
+        let mut chs_message = BytesMut::new();
+        let mut state = NtorV3Client::<K, D>::client1(materials, &mut chs_message)?;
         // let mut file = tokio::fs::File::create("message.hex").await?;
         // file.write_all(&chs_message).await?;
         stream.write_all(&chs_message).await?;
 
         debug!(
             "{} handshake sent {}B, waiting for sever response",
-            materials.session_id,
+            state.materials.session_id,
             chs_message.len()
         );
 
-        let mut buf = [0u8; MAX_HANDSHAKE_LENGTH];
+        let mut buf = [0u8; MAX_PACKET_LENGTH];
         loop {
             let n = stream.read(&mut buf).await?;
             if n == 0 {
@@ -220,18 +249,18 @@ impl ClientSession<Initialized> {
             }
             debug!(
                 "{} read {n}/{}B of server handshake",
-                materials.session_id,
+                state.materials.session_id,
                 buf.len()
             );
 
-            match NtorV3Client::client2(state, &buf[..n]) {
-                Ok(r) => return Ok(r),
+            match NtorV3Client::client2(&mut state, &buf[..n]) {
+                Ok(r) => return Ok((r, stream)),
                 Err(Error::HandshakeErr(RelayHandshakeError::EAgain)) => continue,
                 Err(e) => {
                     // if a deadline was set and has not passed already, discard
                     // from the stream until the deadline, then close.
                     if deadline.is_some_and(|d| d > Instant::now()) {
-                        debug!("{} discarding due to: {e}", materials.session_id);
+                        debug!("{} discarding due to: {e}", state.materials.session_id);
                         discard(&mut stream, deadline.unwrap() - Instant::now()).await?;
                     }
                     stream.shutdown().await?;
@@ -242,7 +271,7 @@ impl ClientSession<Initialized> {
     }
 }
 
-impl ClientSession<ClientHandshaking> {
+impl<K: OKemCore> ClientSession<ClientHandshaking, K> {
     pub(crate) fn set_len_seed(&mut self, seed: drbg::Seed) {
         debug!(
             "{} setting length seed {}",
@@ -253,13 +282,13 @@ impl ClientSession<ClientHandshaking> {
     }
 }
 
-impl<S: ClientSessionState> std::fmt::Debug for ClientSession<S> {
+impl<S: ClientSessionState, K: OKemCore> std::fmt::Debug for ClientSession<S, K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "[ id:{}, ident_pk:{}, epoch_hr:{} ]",
             hex::encode(self.node_pubkey.id.as_bytes()),
-            hex::encode(self.node_pubkey.pk.as_bytes()),
+            hex::encode(self.node_pubkey.ek.as_bytes()),
             self.epoch_hour,
         )
     }

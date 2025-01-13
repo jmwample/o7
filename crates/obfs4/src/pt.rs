@@ -59,7 +59,7 @@ where
     type Error = Error;
     type Transport = Transport<T>;
 
-    fn build(&self) -> Self::ServerPT {
+    fn build(self) -> Self::ServerPT {
         crate::ServerBuilder::build(self)
     }
 
@@ -245,6 +245,10 @@ where
 
     fn method_name() -> String {
         OBFS4_NAME.into()
+    }
+
+    fn get_client_params(&self) -> String {
+        self.client_params().as_opts()
     }
 }
 

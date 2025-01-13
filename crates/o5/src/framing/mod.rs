@@ -108,16 +108,19 @@ pub enum FrameError {
     /// is the error returned when [`encode`] rejects the payload length.
     InvalidPayloadLength(usize),
 
-    /// A cryptographic error occured.
+    /// A cryptographic error occurred.
     Crypto(crypto_secretbox::Error),
 
-    /// An error occured with the I/O processing
+    /// Failed to marshall a frame or packet,
+    FailedToMarshall(String),
+
+    /// An error occurred with the I/O processing
     IO(String),
 
     /// Returned when [`decode`] requires more data to continue.
     EAgain,
 
-    /// Returned when [`decode`] failes to authenticate a frame.
+    /// Returned when [`decode`] failed to authenticate a frame.
     TagMismatch,
 
     /// Returned when the NaCl secretbox nonce's counter wraps (FATAL).
@@ -127,7 +130,7 @@ pub enum FrameError {
     ShortBuffer,
 
     /// Error indicating that a message decoded, or a message provided for
-    /// encoding is of an innapropriate type for the context.
+    /// encoding is of an inappropriate type for the context.
     InvalidMessage,
 
     /// Failed while trying to parse a handshake message
@@ -147,6 +150,7 @@ impl std::fmt::Display for FrameError {
                 write!(f, "framing: Invalid payload length: {s}")
             }
             FrameError::Crypto(e) => write!(f, "framing: Secretbox encrypt/decrypt error: {e}"),
+            FrameError::FailedToMarshall(s) => write!(f, "Frame or Packet failed to marshall: {s}"),
             FrameError::IO(e) => {
                 write!(f, "framing: i/o error occured while processing frame: {e}")
             }
