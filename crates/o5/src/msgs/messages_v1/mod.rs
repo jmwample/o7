@@ -2,7 +2,8 @@
 
 use crate::{
     constants::*,
-    framing::{FrameError, MESSAGE_OVERHEAD},
+    msgs::{build_and_marshall, InvalidMessage},
+    Error,
 };
 
 mod prng_seed;
@@ -59,12 +60,12 @@ impl From<MessageTypes> for u8 {
 }
 
 impl TryFrom<u8> for MessageTypes {
-    type Error = FrameError;
+    type Error = InvalidMessage;
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             MessageTypes::PAYLOAD => Ok(MessageTypes::Payload),
             MessageTypes::PRNG_SEED => Ok(MessageTypes::PrngSeed),
-            _ => Err(FrameError::UnknownMessageType(value)),
+            _ => Err(InvalidMessage::UnknownMessageType(value)),
         }
     }
 }
@@ -99,7 +100,7 @@ impl Messages {
         }
     }
 
-    pub(crate) fn marshall<T: BufMut>(&self, dst: &mut T) -> Result<(), FrameError> {
+    pub(crate) fn marshall<T: BufMut>(&self, dst: &mut T) -> Result<(), InvalidMessage> {
         dst.put_u8(self.as_pt().into());
         match self {
             Messages::Payload(buf) => {
@@ -125,9 +126,9 @@ impl Messages {
         Ok(())
     }
 
-    pub(crate) fn try_parse<T: BufMut + Buf>(buf: &mut T) -> Result<Self, FrameError> {
+    pub(crate) fn try_parse<T: BufMut + Buf>(buf: &mut T) -> Result<Self, InvalidMessage> {
         if buf.remaining() < MESSAGE_OVERHEAD {
-            Err(FrameError::InvalidMessage)?
+            Err(InvalidMessage::InvalidHeader)?
         }
         let pt: MessageTypes = buf.get_u8().try_into()?;
         let length = buf.get_u16() as usize;
@@ -221,7 +222,7 @@ mod test {
     }
 
     #[test]
-    fn prngseed() -> Result<(), FrameError> {
+    fn prngseed() -> Result<(), Error> {
         init_subscriber();
 
         let mut buf = BytesMut::new();
@@ -239,7 +240,7 @@ mod test {
     }
 
     #[test]
-    fn payload() -> Result<(), FrameError> {
+    fn payload() -> Result<(), Error> {
         init_subscriber();
 
         let mut buf = BytesMut::new();

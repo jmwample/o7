@@ -9,8 +9,12 @@
 ///     - tokio_util codec docs
 ///
 use super::*;
-use crate::test_utils::init_subscriber;
-use crate::Result;
+use crate::{
+    constants::*,
+    msgs::{build_and_marshall, MessageTypes, Messages},
+    test_utils::init_subscriber,
+    Error, Result,
+};
 
 use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
@@ -67,10 +71,11 @@ async fn oversized_flow() -> Result<()> {
     let mut src = Bytes::from(oversized_messsage);
     let res = codec.encode(&mut src, &mut b);
 
-    assert_eq!(
-        res.unwrap_err(),
-        FrameError::InvalidPayloadLength(frame_len)
-    );
+    match res {
+        Ok(_) => panic!("overflow should have caused error"),
+        Err(Error::O5Framing(FrameError::InvalidPayloadLength(frame_len))) => {}
+        Err(e) => panic!("overflow caused incorrect error {e}"),
+    }
     Ok(())
 }
 

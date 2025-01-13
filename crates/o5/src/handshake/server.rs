@@ -6,12 +6,12 @@ use crate::{
         utils::{find_mac_mark, get_epoch_hour},
     },
     constants::*,
-    framing::{
+    handshake::client::NtorV3Client as Client,
+    handshake::*,
+    msgs::handshake::{
         ClientHandshakeMessage, ClientStateIncoming, ClientStateOutgoing, ServerHandshakeMessage,
         ServerStateOutgoing,
     },
-    handshake::client::NtorV3Client as Client,
-    handshake::*,
     traits::{DigestSizes, FramingSizes, OKemCore},
     Digest, Error, Result, Server,
 };

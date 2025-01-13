@@ -4,10 +4,13 @@
 
 use digest::FixedOutputReset;
 
+#[macro_use]
+mod macros;
+
 pub mod client;
 pub mod common;
-pub mod extensions;
 pub mod framing;
+pub mod msgs;
 pub mod proto;
 pub mod server;
 pub use client::{Client, ClientBuilder};

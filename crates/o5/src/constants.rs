@@ -18,15 +18,19 @@ use std::{marker::PhantomData, time::Duration};
 //=============================[ Framing / Messages =============================//
 
 pub(crate) use framing::FRAME_OVERHEAD;
-pub const MESSAGE_OVERHEAD: usize = 2 + 1;
+pub(crate) use framing::MAX_SEGMENT_LENGTH;
+pub(crate) use framing::MAX_FRAME_PAYLOAD_LENGTH;
+
+pub(crate) const MESSAGE_OVERHEAD: usize = 2 + 1;
+
 pub const MAX_MESSAGE_PAYLOAD_LENGTH: usize = framing::MAX_FRAME_PAYLOAD_LENGTH - MESSAGE_OVERHEAD;
 pub const MAX_MESSAGE_PADDING_LENGTH: usize = MAX_MESSAGE_PAYLOAD_LENGTH;
 
-pub const CONSUME_READ_SIZE: usize = framing::MAX_SEGMENT_LENGTH * 16;
+pub const CONSUME_READ_SIZE: usize = MAX_SEGMENT_LENGTH * 16;
 
 pub const NODE_ID_LENGTH: usize = ED25519_ID_LEN;
 pub const SEED_LENGTH: usize = drbg::SEED_LENGTH;
-pub const HEADER_LENGTH: usize = framing::FRAME_OVERHEAD + framing::MESSAGE_OVERHEAD;
+pub const HEADER_LENGTH: usize = FRAME_OVERHEAD + MESSAGE_OVERHEAD;
 
 //=================================[ Transport ]=================================//
 

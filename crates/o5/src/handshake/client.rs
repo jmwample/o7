@@ -13,10 +13,10 @@ use crate::{
         utils::{find_mac_mark, get_epoch_hour},
     },
     constants::*,
-    framing::handshake::{
+    handshake::{keys::*, *},
+    msgs::handshake::{
         ClientHandshakeMessage, ClientStateOutgoing, ServerHandshakeMessage, ServerStateIncoming,
     },
-    handshake::{keys::*, *},
     traits::{DigestSizes, FramingSizes, OKemCore},
     Digest, Error, Result, Server,
 };

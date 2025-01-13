@@ -1,7 +1,9 @@
 use crate::{
     common::drbg::{self, Drbg, Seed},
     constants::MESSAGE_OVERHEAD,
-    framing::{FrameError, Messages},
+    framing::FrameError,
+    msgs::{InvalidMessage, Messages},
+    Error,
 };
 
 use bytes::{Buf, BufMut, BytesMut};
@@ -106,7 +108,7 @@ impl EncryptingDecoder {
 
 impl Decoder for EncryptingCodec {
     type Item = Messages;
-    type Error = FrameError;
+    type Error = Error;
 
     // Decode decodes a stream of data and returns the length if any.  ErrAgain is
     // a temporary failure, all other errors MUST be treated as fatal and the
@@ -210,7 +212,7 @@ impl Decoder for EncryptingCodec {
         }
         let plaintext = res?;
         if plaintext.len() < MESSAGE_OVERHEAD {
-            return Err(FrameError::InvalidMessage);
+            return Err(InvalidMessage::InvalidHeader.into());
         }
 
         // Clean up and prepare for the next frame
@@ -223,8 +225,8 @@ impl Decoder for EncryptingCodec {
         match Messages::try_parse(&mut BytesMut::from(plaintext.as_slice())) {
             Ok(Messages::Padding(_)) => Ok(None),
             Ok(m) => Ok(Some(m)),
-            Err(FrameError::UnknownMessageType(_)) => Ok(None),
-            Err(e) => Err(e),
+            Err(InvalidMessage::UnknownMessageType(_)) => Ok(None),
+            Err(e) => Err(e.into()),
         }
     }
 }
@@ -255,7 +257,7 @@ impl EncryptingEncoder {
 }
 
 impl<T: Buf> Encoder<T> for EncryptingCodec {
-    type Error = FrameError;
+    type Error = Error;
 
     /// Encode encodes a single frame worth of payload and returns. Plaintext
     /// should either be a handshake message OR a buffer containing one or more
@@ -272,7 +274,7 @@ impl<T: Buf> Encoder<T> for EncryptingCodec {
 
         // Don't send a frame if it is longer than the other end will accept.
         if plaintext.remaining() > MAX_FRAME_PAYLOAD_LENGTH {
-            return Err(FrameError::InvalidPayloadLength(plaintext.remaining()));
+            return Err(FrameError::InvalidPayloadLength(plaintext.remaining()).into());
         }
 
         let mut plaintext_frame = BytesMut::new();

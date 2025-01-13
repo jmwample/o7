@@ -4,7 +4,8 @@ use crate::{
         probdist::{self, WeightedDist},
     },
     constants::*,
-    framing,
+    framing::{self, FrameError, O5Codec},
+    msgs::{InvalidMessage, Messages},
     sessions::Session,
     traits::OKemCore,
     Result,
@@ -25,8 +26,6 @@ use std::{
     result::Result as StdResult,
     task::{Context, Poll},
 };
-
-use super::framing::{FrameError, Messages};
 
 #[derive(Debug, Clone)]
 pub(crate) enum MaybeTimeout {
@@ -90,7 +89,7 @@ where
     K: OKemCore,
 {
     #[pin]
-    pub stream: Framed<T, framing::O5Codec>,
+    pub stream: Framed<T, O5Codec>,
 
     pub length_dist: probdist::WeightedDist,
     pub ipt_dist: probdist::WeightedDist,
@@ -106,7 +105,7 @@ where
     pub(crate) fn new(
         // inner: &'a mut dyn Stream<'a>,
         inner: T,
-        codec: framing::O5Codec,
+        codec: O5Codec,
         session: Session<K>,
     ) -> Self {
         let stream = Framed::new(inner, codec);
@@ -118,18 +117,9 @@ where
         // always have enough for a seed here.
         let ipt_seed = drbg::Seed::try_from(&hasher.finalize()[..SEED_LENGTH]).unwrap();
 
-        let length_dist = WeightedDist::new(
-            len_seed,
-            0,
-            framing::MAX_SEGMENT_LENGTH as i32,
-            session.biased(),
-        );
-        let ipt_dist = WeightedDist::new(
-            ipt_seed,
-            0,
-            framing::MAX_SEGMENT_LENGTH as i32,
-            session.biased(),
-        );
+        let length_dist =
+            WeightedDist::new(len_seed, 0, MAX_SEGMENT_LENGTH as i32, session.biased());
+        let ipt_dist = WeightedDist::new(ipt_seed, 0, MAX_SEGMENT_LENGTH as i32, session.biased());
 
         Self {
             stream,
@@ -139,9 +129,9 @@ where
         }
     }
 
-    pub(crate) fn try_handle_non_payload_message(&mut self, msg: framing::Messages) -> Result<()> {
+    pub(crate) fn try_handle_non_payload_message(&mut self, msg: Messages) -> Result<()> {
         match msg {
-            Messages::Payload(_) => Err(FrameError::InvalidMessage.into()),
+            Messages::Payload(_) => Err(InvalidMessage::InvalidContext.into()),
             Messages::Padding(_) => Ok(()),
 
             // TODO: Handle other Messages
@@ -156,31 +146,31 @@ where
     ///
     /// TODO: document logic more clearly
     pub(crate) fn pad_burst(&self, buf: &mut BytesMut, to_pad_to: usize) -> Result<()> {
-        let tail_len = buf.len() % framing::MAX_SEGMENT_LENGTH;
+        let tail_len = buf.len() % MAX_SEGMENT_LENGTH;
 
         let pad_len: usize = if to_pad_to >= tail_len {
             to_pad_to - tail_len
         } else {
-            (framing::MAX_SEGMENT_LENGTH - tail_len) + to_pad_to
+            (MAX_SEGMENT_LENGTH - tail_len) + to_pad_to
         };
 
         if pad_len > HEADER_LENGTH {
             // pad_len > 19
-            Ok(framing::build_and_marshall(
+            Ok(build_and_marshall(
                 buf,
                 MessageTypes::Payload.into(),
                 vec![],
                 pad_len - HEADER_LENGTH,
             )?)
         } else if pad_len > 0 {
-            framing::build_and_marshall(
+            build_and_marshall(
                 buf,
                 MessageTypes::Payload.into(),
                 vec![],
-                framing::MAX_MESSAGE_PAYLOAD_LENGTH,
+                MAX_MESSAGE_PAYLOAD_LENGTH,
             )?;
             // } else {
-            Ok(framing::build_and_marshall(
+            Ok(build_and_marshall(
                 buf,
                 MessageTypes::Payload.into(),
                 vec![],
@@ -206,7 +196,7 @@ where
         let mut this = self.as_mut().project();
 
         // determine if the stream is ready to send an event?
-        if futures::Sink::<&[u8]>::poll_ready(this.stream.as_mut(), cx) == Poll::Pending {
+        if futures::Sink::<&[u8]>::poll_ready(this.stream.as_mut(), cx).is_pending() {
             return Poll::Pending;
         }
 
@@ -214,27 +204,26 @@ where
         // chunks until we have less than that amount left.
         // TODO: asyncwrite - apply length_dist instead of just full payloads
         let mut len_sent: usize = 0;
-        let mut out_buf = BytesMut::with_capacity(framing::MAX_MESSAGE_PAYLOAD_LENGTH);
-        while msg_len - len_sent > framing::MAX_MESSAGE_PAYLOAD_LENGTH {
+        let mut out_buf = BytesMut::with_capacity(MAX_MESSAGE_PAYLOAD_LENGTH);
+        while msg_len - len_sent > MAX_MESSAGE_PAYLOAD_LENGTH {
             // package one chunk of the mesage as a payload
-            let payload = framing::Messages::Payload(
-                buf[len_sent..len_sent + framing::MAX_MESSAGE_PAYLOAD_LENGTH].to_vec(),
-            );
+            let payload =
+                Messages::Payload(buf[len_sent..len_sent + MAX_MESSAGE_PAYLOAD_LENGTH].to_vec());
 
             // send the marshalled payload
             payload.marshall(&mut out_buf)?;
             this.stream.as_mut().start_send(&mut out_buf)?;
 
-            len_sent += framing::MAX_MESSAGE_PAYLOAD_LENGTH;
+            len_sent += MAX_MESSAGE_PAYLOAD_LENGTH;
             out_buf.clear();
 
             // determine if the stream is ready to send more data. if not back off
-            if futures::Sink::<&[u8]>::poll_ready(this.stream.as_mut(), cx) == Poll::Pending {
+            if futures::Sink::<&[u8]>::poll_ready(this.stream.as_mut(), cx).is_pending() {
                 return Poll::Ready(Ok(len_sent));
             }
         }
 
-        let payload = framing::Messages::Payload(buf[len_sent..].to_vec());
+        let payload = Messages::Payload(buf[len_sent..].to_vec());
 
         let mut out_buf = BytesMut::new();
         payload.marshall(&mut out_buf)?;
@@ -299,7 +288,7 @@ where
                 }
             };
 
-            if let framing::Messages::Payload(message) = msg {
+            if let Messages::Payload(message) = msg {
                 buf.put_slice(&message);
                 return Poll::Ready(Ok(()));
             }

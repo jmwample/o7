@@ -7,11 +7,12 @@ use crate::{
         },
     },
     constants::*,
-    framing::{Messages, O5Codec},
+    framing::O5Codec,
     handshake::{
         CHSMaterials, ClientHsComplete, IdentityPublicKey, NtorV3Client, NtorV3KeyGen,
         NtorV3KeyGenerator,
     },
+    msgs::Messages,
     proto::{O5Stream, ObfuscatedStream},
     sessions::{Established, Fault, Initialized, Session},
     traits::OKemCore,

@@ -54,9 +54,3 @@ impl<K: OKemCore> FramingSizes for K {
     const EK_SIZE: usize =
         <<K as kemeleon::OKemCore>::EncapsulationKey as kemeleon::Encode>::EncodedSize::USIZE;
 }
-
-// trait HandshakeSize {
-//     /// Minimum possible sever handshake length // TODO
-//     pub const SERVER_MIN_HANDSHAKE_LENGTH: usize =
-//     REPRESENTATIVE_LENGTH + AUTHCODE_LENGTH + MARK_LENGTH + MAC_LENGTH;
-// }

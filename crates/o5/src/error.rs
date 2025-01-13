@@ -1,4 +1,5 @@
-use crate::framing::FrameError;
+use crate::msgs;
+use crate::{framing::FrameError, msgs::InvalidMessage};
 
 use std::array::TryFromSliceError;
 use std::num::NonZeroUsize;
@@ -24,7 +25,10 @@ pub enum Error {
     EncodeError(Box<dyn std::error::Error + Send + Sync>),
     Utf8Error(FromUtf8Error),
     RngSourceErr(getrandom::Error),
+    InvalidMessage(InvalidMessage),
+    O5Framing(FrameError),
     Crypto(String),
+
     NullTransport,
     NotImplemented,
     NotSupported,
@@ -51,8 +55,6 @@ pub enum Error {
         err: tor_cell::Error,
     },
     HandshakeErr(RelayHandshakeError),
-
-    O5Framing(FrameError),
 }
 
 impl Display for Error {
@@ -63,6 +65,7 @@ impl Display for Error {
             Error::Other(e) => write!(f, "{}", e),
             Error::IOError(e) => write!(f, "{}", e),
             Error::EncodeError(e) => write!(f, "{}", e),
+            Error::InvalidMessage(e) => write!(f, "invalid message: {}", e),
             Error::Utf8Error(e) => write!(f, "{}", e),
             Error::RngSourceErr(e) => write!(f, "{}", e),
             Error::Crypto(e) => write!(f, "cryptographic err: {}", e),
@@ -179,6 +182,12 @@ impl From<FrameError> for Error {
 impl From<RelayHandshakeError> for Error {
     fn from(value: RelayHandshakeError) -> Self {
         Error::HandshakeErr(value)
+    }
+}
+
+impl From<crypto_secretbox::Error> for Error {
+    fn from(value: crypto_secretbox::Error) -> Self {
+        Error::O5Framing(FrameError::Crypto(value))
     }
 }
 

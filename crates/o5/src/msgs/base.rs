@@ -1,27 +1,19 @@
-use crate::framing::{self, FrameError};
-
 // TODO: drbg for size sampling
-//common::drbg,
-//
-// use futures::sink::{Sink, SinkExt};
+// use crate::common::drbg,
+use crate::{constants::*, framing::FrameError, msgs::InvalidMessage, Error};
 
 use tokio_util::bytes::{Buf, BufMut};
 
 use ptrs::trace;
-
-pub(crate) const MESSAGE_OVERHEAD: usize = 2 + 1;
-pub(crate) const MAX_MESSAGE_PAYLOAD_LENGTH: usize =
-    framing::MAX_FRAME_PAYLOAD_LENGTH - MESSAGE_OVERHEAD;
-// pub(crate) const MAX_MESSAGE_PADDING_LENGTH: usize = MAX_MESSAGE_PAYLOAD_LENGTH;
 
 pub type MessageType = u8;
 pub trait Message {
     type Output;
     fn as_pt(&self) -> MessageType;
 
-    fn marshall<T: BufMut>(&self, dst: &mut T) -> Result<(), FrameError>;
+    fn marshall<T: BufMut>(&self, dst: &mut T) -> Result<(), Error>;
 
-    fn try_parse<T: BufMut + Buf>(buf: &mut T) -> Result<Self::Output, FrameError>;
+    fn try_parse<T: BufMut + Buf>(buf: &mut T) -> Result<Self::Output, Error>;
 }
 
 /// Frames are:
@@ -46,7 +38,7 @@ pub fn build_and_marshall<T: BufMut>(
     pt: MessageType,
     data: impl AsRef<[u8]>,
     pad_len: usize,
-) -> Result<(), FrameError> {
+) -> Result<(), Error> {
     // is the provided pad_len too long?
     if pad_len > u16::MAX as usize {
         Err(FrameError::InvalidPayloadLength(pad_len))?

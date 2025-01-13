@@ -43,17 +43,8 @@
 use crate::common::drbg;
 use bytes::{Buf, BufMut};
 
-mod messages_base;
-pub use messages_base::*;
-
-mod messages_v1;
-pub use messages_v1::{MessageTypes, Messages};
-
 mod codecs;
 pub use codecs::EncryptingCodec as O5Codec;
-
-pub(crate) mod handshake;
-pub use handshake::*;
 
 /// MaximumSegmentLength is the length of the largest possible segment
 /// including overhead.
@@ -90,17 +81,6 @@ pub(crate) const TAG_SIZE: usize = 16;
 /// encrypting / decryptong codec, i.e. in framing/codec and handshake/
 pub(crate) const KEY_MATERIAL_LENGTH: usize = KEY_LENGTH + NONCE_PREFIX_LENGTH + drbg::SEED_LENGTH;
 
-pub trait Marshall {
-    fn marshall(&mut self, buf: &mut impl BufMut) -> Result<(), FrameError>;
-}
-
-pub trait TryParse {
-    type Output;
-    fn try_parse(&mut self, buf: &mut impl Buf) -> Result<Self::Output, FrameError>
-    where
-        Self: Sized;
-}
-
 impl std::error::Error for FrameError {}
 
 #[derive(Debug, PartialEq, Eq)]
@@ -128,19 +108,6 @@ pub enum FrameError {
 
     /// Returned when the buffer provided for writing a frame is too small.
     ShortBuffer,
-
-    /// Error indicating that a message decoded, or a message provided for
-    /// encoding is of an inappropriate type for the context.
-    InvalidMessage,
-
-    /// Failed while trying to parse a handshake message
-    InvalidHandshake,
-
-    /// Received either a REALLY unfortunate random, or a replayed handshake message
-    ReplayedHandshake,
-
-    /// An unknown packet type was received in a non-handshake packet frame.
-    UnknownMessageType(u8),
 }
 
 impl std::fmt::Display for FrameError {
@@ -161,10 +128,6 @@ impl std::fmt::Display for FrameError {
                 f,
                 "framing: provided bytes buffer was too short for payload"
             ),
-            FrameError::InvalidMessage => write!(f, "framing: incorrect message for context"),
-            FrameError::InvalidHandshake => write!(f, "framing: failed to parse handshake message"),
-            FrameError::ReplayedHandshake => write!(f, "framing: handshake replayed within TTL"),
-            FrameError::UnknownMessageType(pt) => write!(f, "framing: unknown packet type ({pt})"),
         }
     }
 }
@@ -185,6 +148,17 @@ impl From<FrameError> for std::io::Error {
     fn from(value: FrameError) -> Self {
         std::io::Error::new(std::io::ErrorKind::Other, format!("{}", value))
     }
+}
+
+pub trait Marshall {
+    fn marshall(&mut self, buf: &mut impl BufMut) -> Result<(), FrameError>;
+}
+
+pub trait TryParse {
+    type Output;
+    fn try_parse(&mut self, buf: &mut impl Buf) -> Result<Self::Output, FrameError>
+    where
+        Self: Sized;
 }
 
 #[cfg(test)]
