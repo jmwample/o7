@@ -39,7 +39,7 @@ where
         String::from("passthrough")
     }
 
-    fn build(&self) -> Self::ServerPT {
+    fn build(self) -> Self::ServerPT {
         Passthrough {}
     }
 
@@ -154,6 +154,10 @@ where
 
     fn method_name() -> String {
         String::from("passthrough")
+    }
+
+    fn get_client_params(&self) -> String {
+        String::new()
     }
 }
 
@@ -520,11 +524,12 @@ mod design_tests {
         <<P as PluggableTransport<T>>::ServerBuilder as ServerBuilder<T>>::ServerPT: ServerTransport<T>,
         <<P as PluggableTransport<T>>::ServerBuilder as ServerBuilder<T>>::Error: std::error::Error + 'static,
     {
-        Ok(P::server_builder()
+        let mut builder = P::server_builder();
+        builder
             .statefile_location("./")?
-            .timeout(Some(Duration::from_secs(30)))?
-            .build()
-            .reveal(t))
+            .timeout(Some(Duration::from_secs(30)))?;
+        let server = builder.build();
+        Ok(server.reveal(t))
     }
 
     #[tokio::test]
@@ -599,11 +604,11 @@ mod design_tests {
         B::Error: std::error::Error + 'static,
         <B as ServerBuilder<T>>::Error: std::error::Error + Send + Sync,
     {
-        Ok(pt_builder
+        pt_builder
             .statefile_location("./")?
-            .timeout(Some(Duration::from_secs(30)))?
-            .build()
-            .reveal(t))
+            .timeout(Some(Duration::from_secs(30)))?;
+
+        Ok(pt_builder.build().reveal(t))
     }
 
     #[tokio::test]
@@ -763,15 +768,17 @@ mod design_tests {
 
             let (tcp_sock, _) = listener.accept().await.unwrap();
 
-            let pb: &BuilderS = &<Passthrough as PluggableTransport<TcpStream>>::server_builder();
+            let pb1: BuilderS = <Passthrough as PluggableTransport<TcpStream>>::server_builder();
+            let pb2: BuilderS = <Passthrough as PluggableTransport<TcpStream>>::server_builder();
+            let pb3: BuilderS = <Passthrough as PluggableTransport<TcpStream>>::server_builder();
 
-            let client1 = <BuilderS as ServerBuilder<TcpStream>>::build(pb);
+            let client1 = <BuilderS as ServerBuilder<TcpStream>>::build(pb1);
             let conn1 = client1.reveal(tcp_sock).await.unwrap();
 
-            let client2 = <BuilderS as ServerBuilder<TcpStream>>::build(pb);
+            let client2 = <BuilderS as ServerBuilder<TcpStream>>::build(pb2);
             let conn2 = client2.reveal(conn1).await.unwrap();
 
-            let client3 = <BuilderS as ServerBuilder<TcpStream>>::build(pb);
+            let client3 = <BuilderS as ServerBuilder<TcpStream>>::build(pb3);
             let mut sock = client3.reveal(conn2).await.unwrap();
 
             let (mut r, mut w) = tokio::io::split(&mut sock);

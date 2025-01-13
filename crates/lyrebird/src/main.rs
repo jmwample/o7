@@ -527,10 +527,10 @@ async fn server_setup(
         }
 
         let mut builder = Obfs4PT::server_builder();
-        let server = builder
+        builder
             .statefile_location(statedir)?
-            .options(&bind_addr.options)?
-            .build();
+            .options(&bind_addr.options)?;
+        let server = builder.build();
 
         let listener = tokio::net::TcpListener::bind(bind_addr.addr).await?;
         listeners.push(server_listen_loop::<TcpStream, _>(

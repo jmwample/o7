@@ -127,6 +127,12 @@ where
 
     /// Returns a string identifier for this transport
     fn method_name() -> String;
+
+    /// Returns a string or parameters that can be used by a ['ClientBuilder']
+    /// in the `options(...)` function to properly establish a connection with
+    /// this server based on the configuration of the server when this method
+    /// is called.
+    fn get_client_params(&self) -> String;
 }
 
 /// Server Transport builder interface
@@ -145,7 +151,7 @@ where
     ///
     /// **Errors**
     /// If a required field has not been initialized.
-    fn build(&self) -> Self::ServerPT;
+    fn build(self) -> Self::ServerPT;
 
     /// Pluggable transport attempts to parse and validate options from a string,
     /// typically using ['parse_smethod_args'].

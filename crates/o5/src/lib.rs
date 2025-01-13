@@ -1,4 +1,6 @@
 #![doc = include_str!("../README.md")]
+// #![warn(missing_docs)]
+#![allow(unused)]
 
 pub mod client;
 pub mod common;

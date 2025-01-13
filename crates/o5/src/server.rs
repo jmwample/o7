@@ -285,10 +285,7 @@ impl Server {
 
     pub fn client_params(&self) -> ClientBuilder {
         ClientBuilder {
-            // these unwraps should be safe as we are sure of the size of the source
-            station_pubkey: self.identity_keys.pk.pk.as_bytes().try_into().unwrap(),
-            station_id: self.identity_keys.pk.id.as_bytes().try_into().unwrap(),
-
+            node_details: self.identity_keys.pk.clone(),
             statefile_path: None,
             handshake_timeout: MaybeTimeout::Default_,
         }

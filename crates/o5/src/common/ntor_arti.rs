@@ -13,10 +13,10 @@
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
 use crate::{
-    common::{colorize, mlkem1024_x25519},
+    common::{colorize, xwing},
     Error, Result,
 };
-//use zeroize::Zeroizing;
+
 use tor_bytes::SecretBuf;
 
 pub const SESSION_ID_LEN: usize = 8;
@@ -70,10 +70,8 @@ pub trait ClientHandshake {
     type HandshakeMaterials: ClientHandshakeMaterials;
     /// The type for the state that the client holds while waiting for a reply.
     type StateType;
-    /// A type that is returned and used to generate session keys.x
-    type KeyGen;
     /// Type of extra data returned by server (without forward secrecy).
-    type ServerAuxData;
+    type HsOutput: ClientHandshakeComplete;
 
     /// Generate a new client onionskin for a relay with a given onion key,
     /// including `client_aux_data` to be sent without forward secrecy.
@@ -81,15 +79,22 @@ pub trait ClientHandshake {
     /// On success, return a state object that will be used to
     /// complete the handshake, along with the message to send.
     fn client1(materials: Self::HandshakeMaterials) -> Result<(Self::StateType, Vec<u8>)>;
+
     /// Handle an onionskin from a relay, and produce aux data returned
     /// from the server, and a key generator.
     ///
     /// The state object must match the one that was used to make the
     /// client onionskin that the server is replying to.
-    fn client2<T: AsRef<[u8]>>(
-        state: Self::StateType,
-        msg: T,
-    ) -> Result<(Self::ServerAuxData, Self::KeyGen)>;
+    fn client2<T: AsRef<[u8]>>(state: &mut Self::StateType, msg: T) -> Result<(Self::HsOutput)>;
+}
+
+pub trait ClientHandshakeComplete {
+    type KeyGen;
+    type ServerAuxData;
+    type Remainder;
+    fn keygen(&self) -> Self::KeyGen;
+    fn extensions(&self) -> &Self::ServerAuxData;
+    fn remainder(&self) -> Self::Remainder;
 }
 
 /// Trait for an object that handles incoming auxiliary data and
@@ -201,7 +206,7 @@ pub enum RelayHandshakeError {
 
     /// Error happened during cryptographic handshake
     #[error("")]
-    CryptoError(mlkem1024_x25519::EncodeError),
+    CryptoError(xwing::EncodeError),
 
     /// The client asked for a key we didn't have.
     #[error("Client asked for a key or ID that we don't have")]

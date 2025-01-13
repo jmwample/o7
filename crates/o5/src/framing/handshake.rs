@@ -8,14 +8,17 @@ use crate::{
     Result,
 };
 
-use bytes::BufMut;
 use block_buffer::Eager;
-use digest::{core_api::{BlockSizeUser, CoreProxy, UpdateCore, FixedOutputCore, BufferKindUser}, HashMarker};
+use bytes::BufMut;
+use digest::{
+    core_api::{BlockSizeUser, BufferKindUser, CoreProxy, FixedOutputCore, UpdateCore},
+    HashMarker,
+};
 use hmac::{Hmac, Mac};
 use ptrs::trace;
-use typenum::{consts::U256, operator_aliases::Le, type_operators::IsLess, marker_traits::NonZero};
 use tor_cell::relaycell::extend::NtorV3Extension;
 use tor_llcrypto::d::Sha3_256;
+use typenum::{consts::U256, marker_traits::NonZero, operator_aliases::Le, type_operators::IsLess};
 
 // -----------------------------[ Server ]-----------------------------
 
@@ -105,7 +108,10 @@ pub struct ClientHandshakeMessage<'a> {
 }
 
 impl<'a> ClientHandshakeMessage<'a> {
-    pub fn new(client_session_pubkey: SessionPublicKey, hs_materials: &'a CHSMaterials) -> Self {
+    pub(crate) fn new(
+        client_session_pubkey: SessionPublicKey,
+        hs_materials: &'a CHSMaterials,
+    ) -> Self {
         Self {
             hs_materials,
             client_session_pubkey,
@@ -125,11 +131,7 @@ impl<'a> ClientHandshakeMessage<'a> {
         self.epoch_hour.clone()
     }
 
-    pub fn marshall(
-        &mut self,
-        buf: &mut impl BufMut,
-        key: &[u8],
-    ) -> Result<()> {
+    pub fn marshall(&mut self, buf: &mut impl BufMut, key: &[u8]) -> Result<()> {
         trace!("serializing client handshake");
 
         let h = Hmac::<Sha3_256>::new_from_slice(key).unwrap();
@@ -140,7 +142,12 @@ impl<'a> ClientHandshakeMessage<'a> {
     pub fn marshall_inner<D>(&mut self, _buf: &mut impl BufMut, _h: Hmac<D>) -> Result<()>
     where
         D: CoreProxy,
-        D::Core: HashMarker + UpdateCore + FixedOutputCore + BufferKindUser<BufferKind = Eager> + Default + Clone,
+        D::Core: HashMarker
+            + UpdateCore
+            + FixedOutputCore
+            + BufferKindUser<BufferKind = Eager>
+            + Default
+            + Clone,
         <D::Core as BlockSizeUser>::BlockSize: IsLess<U256>,
         Le<<D::Core as BlockSizeUser>::BlockSize, U256>: NonZero,
     {

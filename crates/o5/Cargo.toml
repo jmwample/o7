@@ -35,6 +35,7 @@ hkdf = "0.12.3"
 crypto_secretbox = { version="0.1.1", features=["chacha20"]}
 subtle = "2.5.0"
 x25519-dalek = { version = "2.0.1", features = ["static_secrets", "getrandom", "reusable_secrets"]}
+x-wing = "0.0.1-alpha"
 
 ## Utils
 pin-project = "1.1.3"

@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 mod fake_prng;
+pub(crate) mod test_keys;
 pub mod tests;
 pub(crate) use fake_prng::*;
 
