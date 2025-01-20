@@ -12,7 +12,7 @@ use crate::{
         CHSMaterials, ClientHsComplete, IdentityPublicKey, NtorV3Client, NtorV3KeyGen,
         NtorV3KeyGenerator,
     },
-    msgs::Messages,
+    msgs::{Extensions, Messages},
     proto::{O5Stream, ObfuscatedStream},
     sessions::{Established, Fault, Initialized, Session},
     traits::OKemCore,
@@ -189,29 +189,28 @@ impl<K: OKemCore> ClientSession<Initialized, K> {
         session.set_session_id(keygen.session_id());
         let mut codec: O5Codec = keygen.into();
 
-        // // TODO: handle server response extensions here
-        // for ext in hs_complete.extensions() {
-        //      // do something
-        // }
+        // TODO: handle server response extensions here
+        for ext in hs_complete.extensions() {
+            match ext {
+                Extensions::PrngSeed(seed) => {
+                    // PrngSeed should always be present in a successful server hello
+                    session.set_len_seed(seed.0);
+                }
+                _ => {}
+            }
+        } 
 
         let res = codec.decode(&mut hs_complete.remainder());
-        if let Ok(Some(Messages::PrngSeed(seed))) = res {
-            // try to parse the remainder of the server hello packet as a
-            // PrngSeed since it should be there.
-            let len_seed = drbg::Seed::from(seed);
-            session.set_len_seed(len_seed);
-        } else {
-            debug!("NOPE {res:?}");
-        }
+        // TODO: do something with the remainder
 
         // mark session as Established
         let session_state: ClientSession<Established, K> = session.transition(Established {});
         info!("{} handshake complete", session_state.session_id());
 
         codec.handshake_complete();
-        let o4 = ObfuscatedStream::new(stream, codec, Session::Client(session_state));
+        let o5 = ObfuscatedStream::new(stream, codec, Session::Client(session_state));
 
-        Ok(O5Stream::from_o4(o4))
+        Ok(O5Stream::from_o5(o5))
     }
 
     async fn complete_handshake<T, D>(

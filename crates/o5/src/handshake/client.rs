@@ -166,10 +166,16 @@ impl<K: OKemCore, D: Digest> ClientHandshake for NtorV3Client<K, D> {
     /// client onionskin that the server is replying to.
     fn client2<T: AsRef<[u8]>>(state: &mut Self::StateType, msg: T) -> Result<Self::HsOutput> {
         let (message, xof_reader) = Self::client_handshake_ntor_v3_part2(msg, state)?;
-        let extensions = NtorV3Extension::decode(&message).map_err(|err| Error::CellDecodeErr {
-            object: "ntor v3 extensions",
-            err,
-        })?;
+
+        // If no material for extensions was provided, don't parse them
+        let extensions = if !message.is_empty() {
+            NtorV3Extension::decode(&message).map_err(|err| Error::CellDecodeErr {
+                object: "ntor v3 extensions",
+                err,
+            })?
+        } else {
+            Vec::new()
+        };
 
         Ok(HsComplete {
             xof_reader,

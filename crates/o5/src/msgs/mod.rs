@@ -7,6 +7,7 @@ mod messages_v1;
 pub use messages_v1::{MessageTypes, Messages};
 
 pub mod extensions;
+pub use extensions::Extensions;
 
 pub(crate) mod handshake;
 pub use handshake::*;
@@ -31,6 +32,10 @@ pub enum InvalidMessage {
     InvalidEmptyPayload,
     #[error("message was not acceptable in the present context")]
     InvalidContext,
+    #[error("message deviated from sormatting requirements: {0}")]
+    InvalidDeviation(&'static str),
+    #[error("missing data for the named handshake payload value")]
+    MissingData(&'static str),
 }
 
 impl From<InvalidMessage> for Error {

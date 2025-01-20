@@ -13,48 +13,27 @@ use tracing::trace;
 
 #[derive(Debug, PartialEq)]
 pub enum MessageTypes {
-    Payload,
-    PrngSeed,
     Padding,
-    HeartbeatPing,
-    HeartbeatPong,
+    RawPayload,
 
-    HandshakeVersion,
-    ClientParams,
-    ServerParams,
-
-    HandshakeEnd,
+    Heartbeat,
 }
 
 impl MessageTypes {
     // Steady state message types (and required backwards compatibility messages)
-    const PAYLOAD: u8 = 0x00;
-    const PRNG_SEED: u8 = 0x01;
-    const PADDING: u8 = 0x02;
-    const HEARTBEAT_PING: u8 = 0x03;
-    const HEARTBEAT_PONG: u8 = 0x04;
+    const PADDING: u8 = 0x00;
+    const RAW_PAYLOAD: u8 = 0x01;
 
-    // Handshake messages
-    const HANDSHAKE_VERSION: u8 = 0x10;
-    const CLIENT_PARAMS: u8 = 0x11;
-    const SERVER_PARAMS: u8 = 0x11;
-    //...
-
-    const HANDSHAKE_END: u8 = 0x1f;
+    const HEARTBEAT: u8 = 0x10;
 }
 
 impl From<MessageTypes> for u8 {
     fn from(value: MessageTypes) -> Self {
         match value {
-            MessageTypes::Payload => MessageTypes::PAYLOAD,
-            MessageTypes::PrngSeed => MessageTypes::PRNG_SEED,
             MessageTypes::Padding => MessageTypes::PADDING,
-            MessageTypes::HeartbeatPing => MessageTypes::HEARTBEAT_PING,
-            MessageTypes::HeartbeatPong => MessageTypes::HEARTBEAT_PONG,
-            MessageTypes::HandshakeVersion => MessageTypes::HANDSHAKE_VERSION,
-            MessageTypes::ClientParams => MessageTypes::CLIENT_PARAMS,
-            MessageTypes::ServerParams => MessageTypes::SERVER_PARAMS,
-            MessageTypes::HandshakeEnd => MessageTypes::HANDSHAKE_END,
+            MessageTypes::RawPayload => MessageTypes::RAW_PAYLOAD,
+
+            MessageTypes::Heartbeat => MessageTypes::HEARTBEAT,
         }
     }
 }
@@ -63,8 +42,9 @@ impl TryFrom<u8> for MessageTypes {
     type Error = InvalidMessage;
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            MessageTypes::PAYLOAD => Ok(MessageTypes::Payload),
-            MessageTypes::PRNG_SEED => Ok(MessageTypes::PrngSeed),
+            MessageTypes::PADDING => Ok(MessageTypes::Padding),
+            MessageTypes::RAW_PAYLOAD => Ok(MessageTypes::RawPayload),
+            MessageTypes::HEARTBEAT => Ok(MessageTypes::Heartbeat),
             _ => Err(InvalidMessage::UnknownMessageType(value)),
         }
     }
@@ -72,42 +52,24 @@ impl TryFrom<u8> for MessageTypes {
 
 #[derive(Debug, PartialEq)]
 pub enum Messages {
-    Payload(Vec<u8>),
-    PrngSeed([u8; SEED_LENGTH]),
     Padding(u16),
-    HeartbeatPing,
-    HeartbeatPong,
-
-    ClientParams,
-    ServerParams,
-    HandshakeVersion,
-
-    HandshakeEnd,
+    RawPayload(Vec<u8>),
+    Heartbeat,
 }
 
 impl Messages {
     pub(crate) fn as_pt(&self) -> MessageTypes {
         match self {
-            Messages::Payload(_) => MessageTypes::Payload,
-            Messages::PrngSeed(_) => MessageTypes::PrngSeed,
             Messages::Padding(_) => MessageTypes::Padding,
-            Messages::HeartbeatPing => MessageTypes::HeartbeatPing,
-            Messages::HeartbeatPong => MessageTypes::HeartbeatPong,
-            Messages::HandshakeVersion => MessageTypes::HandshakeVersion,
-            Messages::ClientParams => MessageTypes::ClientParams,
-            Messages::ServerParams => MessageTypes::ServerParams,
-            Messages::HandshakeEnd => MessageTypes::HandshakeEnd,
+            Messages::RawPayload(_) => MessageTypes::RawPayload,
+            Messages::Heartbeat => MessageTypes::Heartbeat,
         }
     }
 
     pub(crate) fn marshall<T: BufMut>(&self, dst: &mut T) -> Result<(), InvalidMessage> {
         dst.put_u8(self.as_pt().into());
         match self {
-            Messages::Payload(buf) => {
-                dst.put_u16(buf.len() as u16);
-                dst.put(&buf[..]);
-            }
-            Messages::PrngSeed(buf) => {
+            Messages::RawPayload(buf) => {
                 dst.put_u16(buf.len() as u16);
                 dst.put(&buf[..]);
             }
@@ -134,34 +96,18 @@ impl Messages {
         let length = buf.get_u16() as usize;
 
         match pt {
-            MessageTypes::Payload => {
+
+            MessageTypes::Padding => Ok(Messages::Padding(length as u16)),
+
+            MessageTypes::RawPayload => {
                 let mut dst = vec![];
                 dst.put(buf.take(length));
                 trace!("{}B remainng", buf.remaining());
                 assert_eq!(buf.remaining(), Self::drain_padding(buf));
-                Ok(Messages::Payload(dst))
+                Ok(Messages::RawPayload(dst))
             }
 
-            MessageTypes::PrngSeed => {
-                let mut seed = [0_u8; 24];
-                buf.copy_to_slice(&mut seed[..]);
-                assert_eq!(buf.remaining(), Self::drain_padding(buf));
-                Ok(Messages::PrngSeed(seed))
-            }
-
-            MessageTypes::Padding => Ok(Messages::Padding(length as u16)),
-
-            MessageTypes::HeartbeatPing => Ok(Messages::HeartbeatPing),
-
-            MessageTypes::HeartbeatPong => Ok(Messages::HeartbeatPong),
-
-            MessageTypes::HandshakeVersion => Ok(Messages::HandshakeVersion),
-
-            MessageTypes::ClientParams => Ok(Messages::ClientParams),
-
-            MessageTypes::ServerParams => Ok(Messages::ServerParams),
-
-            MessageTypes::HandshakeEnd => Ok(Messages::HandshakeEnd),
+            MessageTypes::Heartbeat => Ok(Messages::Heartbeat),
         }
     }
 
@@ -222,24 +168,6 @@ mod test {
     }
 
     #[test]
-    fn prngseed() -> Result<(), Error> {
-        init_subscriber();
-
-        let mut buf = BytesMut::new();
-        let mut rng = rand::thread_rng();
-        let pad_len = rng.gen_range(0..100);
-        let mut seed = [0_u8; SEED_LENGTH];
-        rng.fill_bytes(&mut seed);
-
-        build_and_marshall(&mut buf, MessageTypes::PrngSeed.into(), seed, pad_len)?;
-
-        let pkt = Messages::try_parse(&mut buf)?;
-        assert_eq!(Messages::PrngSeed(seed), pkt);
-
-        Ok(())
-    }
-
-    #[test]
     fn payload() -> Result<(), Error> {
         init_subscriber();
 
@@ -249,10 +177,10 @@ mod test {
         let mut payload = [0_u8; 1000];
         rng.fill_bytes(&mut payload);
 
-        build_and_marshall(&mut buf, MessageTypes::Payload.into(), payload, pad_len)?;
+        build_and_marshall(&mut buf, MessageTypes::RawPayload.into(), payload, pad_len)?;
 
         let pkt = Messages::try_parse(&mut buf)?;
-        assert_eq!(Messages::Payload(payload.to_vec()), pkt);
+        assert_eq!(Messages::RawPayload(payload.to_vec()), pkt);
 
         Ok(())
     }

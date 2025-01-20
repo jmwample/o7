@@ -2,9 +2,11 @@
 // use crate::common::drbg,
 use crate::{constants::*, framing::FrameError, msgs::InvalidMessage, Error};
 
+use bytes::Bytes;
 use tokio_util::bytes::{Buf, BufMut};
-
 use ptrs::trace;
+
+use core::fmt;
 
 pub type MessageType = u8;
 pub trait Message {
@@ -64,4 +66,120 @@ pub fn build_and_marshall<T: BufMut>(
         dst.put_bytes(0_u8, pad_len);
     }
     Ok(())
+}
+
+/// An arbitrary, unknown-content, u16-length-prefixed payload
+#[derive(Clone, Eq, PartialEq)]
+pub struct PayloadU16(pub Vec<u8>);
+
+impl PayloadU16 {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    pub fn empty() -> Self {
+        Self::new(Vec::new())
+    }
+
+    pub fn encode_slice(slice: &[u8], bytes: &mut Vec<u8>) {
+        (slice.len() as u16).encode(bytes);
+        bytes.extend_from_slice(slice);
+    }
+}
+
+impl Codec<'_> for PayloadU16 {
+    fn encode<B:BufMut>(&self, bytes: &mut B) {
+        Self::encode_slice(&self.0, bytes);
+    }
+
+    fn read<B:Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
+        let len = u16::read(r)? as usize;
+        let mut sub = r.sub(len)?;
+        let body = sub.rest().to_vec();
+        Ok(Self(body))
+    }
+}
+
+impl fmt::Debug for PayloadU16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        hex(f, &self.0)
+    }
+}
+
+// Format an iterator of u8 into a hex string
+pub(super) fn hex<'a>(
+    f: &mut fmt::Formatter<'_>,
+    payload: impl IntoIterator<Item = &'a u8>,
+) -> fmt::Result {
+    for b in payload {
+        write!(f, "{:02x}", b)?;
+    }
+    Ok(())
+}
+
+/// Trait for implementing encoding and decoding functionality
+/// on something.
+pub trait Codec<'a>: fmt::Debug + Sized {
+    /// Function for encoding itself by appending itself to
+    /// the provided writable Buffer object.
+    fn encode<B:BufMut>(&self, bytes: &mut B);
+
+    /// Function for decoding itself from the provided reader
+    /// will return Some if the decoding was successful or
+    /// None if it was not.
+    fn read<B:Buf>(_: &mut B) -> Result<Self, InvalidMessage>;
+
+    /// Convenience function for encoding the implementation
+    /// into a vec and returning it
+    fn get_encoding(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        self.encode(&mut bytes);
+        bytes
+    }
+
+    /// Function for wrapping a call to the read function in
+    /// a Reader for the slice of bytes provided
+    ///
+    /// Returns `Err(InvalidMessage::ExcessData(_))` if
+    /// `Self::read` does not read the entirety of `bytes`.
+    fn read_bytes(bytes: &'a [u8]) -> Result<Self, InvalidMessage> {
+        let mut reader = Bytes::from(bytes);
+        Self::read(&mut reader).and_then(|r| {
+            reader.expect_empty("read_bytes")?;
+            Ok(r)
+        })
+    }
+}
+
+impl Codec<'_> for u8 {
+    fn encode<B:BufMut>(&self, bytes: &mut B) {
+        bytes.push(*self);
+    }
+
+    fn read<B:Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
+        match r.take(1) {
+            Some(&[byte]) => Ok(byte),
+            _ => Err(InvalidMessage::MissingData("u8")),
+        }
+    }
+}
+
+pub(crate) fn put_u16(v: u16, out: &mut [u8]) {
+    let out: &mut [u8; 2] = (&mut out[..2]).try_into().unwrap();
+    *out = u16::to_be_bytes(v);
+}
+
+impl Codec<'_> for u16 {
+    fn encode<B:BufMut>(&self, bytes: &mut B) {
+        let mut b16 = [0u8; 2];
+        put_u16(*self, &mut b16);
+        bytes.extend_from_slice(&b16);
+    }
+
+    fn read<B:Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
+        match r.take(2) {
+            Some(&[b1, b2]) => Ok(Self::from_be_bytes([b1, b2])),
+            _ => Err(InvalidMessage::MissingData("u16")),
+        }
+    }
 }

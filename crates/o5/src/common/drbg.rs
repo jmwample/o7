@@ -21,6 +21,9 @@ pub(crate) const SEED_LENGTH: usize = 16 + SIZE;
 pub struct Seed([u8; SEED_LENGTH]);
 
 impl Seed {
+
+    pub const BYTE_LEN: usize = SEED_LENGTH;
+
     pub fn new() -> Result<Self> {
         let mut seed = Self([0_u8; SEED_LENGTH]);
         getrandom(&mut seed.0)?;

@@ -74,7 +74,7 @@ where
     T: AsyncRead + AsyncWrite + Unpin,
     K: OKemCore,
 {
-    pub(crate) fn from_o4(os: ObfuscatedStream<T, K>) -> Self {
+    pub(crate) fn from_o5(os: ObfuscatedStream<T, K>) -> Self {
         O5Stream {
             // s: Arc::new(Mutex::new(o4)),
             s: os,
@@ -131,7 +131,7 @@ where
 
     pub(crate) fn try_handle_non_payload_message(&mut self, msg: Messages) -> Result<()> {
         match msg {
-            Messages::Payload(_) => Err(InvalidMessage::InvalidContext.into()),
+            Messages::RawPayload(_) => Err(InvalidMessage::InvalidContext.into()),
             Messages::Padding(_) => Ok(()),
 
             // TODO: Handle other Messages
@@ -158,21 +158,21 @@ where
             // pad_len > 19
             Ok(build_and_marshall(
                 buf,
-                MessageTypes::Payload.into(),
+                MessageTypes::RawPayload.into(),
                 vec![],
                 pad_len - HEADER_LENGTH,
             )?)
         } else if pad_len > 0 {
             build_and_marshall(
                 buf,
-                MessageTypes::Payload.into(),
+                MessageTypes::RawPayload.into(),
                 vec![],
                 MAX_MESSAGE_PAYLOAD_LENGTH,
             )?;
             // } else {
             Ok(build_and_marshall(
                 buf,
-                MessageTypes::Payload.into(),
+                MessageTypes::RawPayload.into(),
                 vec![],
                 pad_len,
             )?)
@@ -208,7 +208,7 @@ where
         while msg_len - len_sent > MAX_MESSAGE_PAYLOAD_LENGTH {
             // package one chunk of the mesage as a payload
             let payload =
-                Messages::Payload(buf[len_sent..len_sent + MAX_MESSAGE_PAYLOAD_LENGTH].to_vec());
+                Messages::RawPayload(buf[len_sent..len_sent + MAX_MESSAGE_PAYLOAD_LENGTH].to_vec());
 
             // send the marshalled payload
             payload.marshall(&mut out_buf)?;
@@ -223,7 +223,7 @@ where
             }
         }
 
-        let payload = Messages::Payload(buf[len_sent..].to_vec());
+        let payload = Messages::RawPayload(buf[len_sent..].to_vec());
 
         let mut out_buf = BytesMut::new();
         payload.marshall(&mut out_buf)?;
@@ -288,7 +288,7 @@ where
                 }
             };
 
-            if let Messages::Payload(message) = msg {
+            if let Messages::RawPayload(message) = msg {
                 buf.put_slice(&message);
                 return Poll::Ready(Ok(()));
             }
