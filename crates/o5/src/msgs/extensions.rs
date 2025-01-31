@@ -19,6 +19,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use core::fmt::Debug;
 
+#[derive(Debug, PartialEq, )]
 pub enum Extensions {
         Padding,
         PrngSeed(PrngSeedExt),
@@ -26,6 +27,7 @@ pub enum Extensions {
         ServerParams(),
         CipherSuiteOffer(),
         CipherSuiteAccept(),
+        Other(OtherExt),
 }
 
 impl Codec<'_> for Extensions {
@@ -46,43 +48,8 @@ impl Codec<'_> for Vec<Extensions> {
 }
 
 impl Extensions {
-    fn encode_many<B: Buf>(exts: & impl Iterator<Self> , r: &mut B) {
-        exts.iter().map(|ext| ext.encode(&mut r))
-    }
-}
-
-pub(crate) trait Sub {
-    /// Attempts to create a new Reader on a sub section of this
-    /// readers bytes by taking a slice of the provided `length`
-    /// will return None if there is not enough bytes
-    fn sub(&mut self, length: usize) -> Result<Self, InvalidMessage>;
-
-    /// Borrows a slice of all the remaining bytes
-    /// that appear after the cursor position.
-    ///
-    /// Moves the cursor to the end of the buffer length.
-    fn rest<'a>(&mut self) -> &'a [u8];
-}
-
-impl<B: Buf> Sub for B {
-    /// Attempts to create a new Reader on a sub section of this
-    /// readers bytes by taking a slice of the provided `length`
-    /// will return None if there is not enough bytes
-    fn sub(&mut self, length: usize) -> Result<Self, InvalidMessage> {
-        match self.take(length) {
-            Some(bytes) => Ok(Bytes::from(bytes)),
-            None => Err(InvalidMessage::MessageTooShort),
-        }
-    }
-
-    /// Borrows a slice of all the remaining bytes
-    /// that appear after the cursor position.
-    ///
-    /// Moves the cursor to the end of the buffer length.
-    fn rest<'a>(&mut self) -> &'a [u8] {
-        let rest = self.chunk();
-        self.cursor = self.advance(self.remaining());
-        rest
+    fn encode_many<B: BufMut>(exts: impl AsRef<[Self]> , r: &mut B) {
+        exts.as_ref().into_iter().for_each(|ext| ext.encode(r));
     }
 }
 
@@ -92,19 +59,17 @@ impl<B: Buf> Sub for B {
 pub struct PrngSeedExt (pub(crate) Seed);
 
 impl Codec<'_> for PrngSeedExt {
-    fn encode<B: BufMut>(&self, bytes: &mut B) {
-        Self::encode_slice(&self.0, bytes);
+    fn encode<B: BufMut>(&self, buf: &mut B) {
+        self.0.as_bytes().iter().for_each(|b| b.encode(buf));
     }
 
     fn read<B: Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
-        let len = u16::read(r)? as usize;
-        if len != Seed::BYTE_LEN {
-            Err(InvalidMessage::InvalidDeviation("incorrect length for prngseed ext"))
+        let p = PayloadU16::read(r)?;
+        if p.0.len() != Seed::BYTE_LEN {
+            return Err(InvalidMessage::InvalidDeviation("incorrect length for prngseed ext"));
         }
 
-        let mut sub = r.sub(len)?;
-        // this should never err as we check the length just before.
-        let body = Seed::try_from(sub.rest())
+        let body = Seed::try_from(p.0)
             .map_err(|_| InvalidMessage::InvalidDeviation("this error should not be possible"))?;
         Ok(Self(body))
     }
@@ -116,38 +81,14 @@ impl From<[u8; Seed::BYTE_LEN]> for PrngSeedExt {
     }
 }
 
-// impl Extension for PrngSeedExt {
-//     fn as_et(&self) -> ExtensionType {
-//         ExtensionType::PrngSeed
-//     }
-//
-//     fn marshall_payload<T: BufMut>(&self, dst: &mut T) -> Result<(), Error> {
-//         dst.write();
-//
-//         Ok(())
-//     }
-//
-//     fn try_parse<Buf>(buf: &mut T) -> Result<Self, Error> {
-//         if buf.remaining() < Seed::BYTE_LEN {
-//             return Err(E);
-//         }
-//
-//         // let mut seed = [0_u8; 24];
-//         // buf.copy_to_slice(&mut seed[..]);
-//
-//         let seed = Seed::try_from(&buf[..Seed::BYTE_LEN])?;
-//         Ok(Self(seed))
-//     }
-
-
 /// Extension other than those predefined in this library.
 #[derive(Clone, Debug, PartialEq)]
-pub struct OtherExtension {
+pub struct OtherExt {
     pub(crate) typ: ExtensionType,
     pub(crate) payload: PayloadU16,
 }
 
-impl OtherExtension {
+impl OtherExt {
     fn encode(&self, bytes: &mut Vec<u8>) {
         self.payload.encode(bytes);
     }
@@ -234,7 +175,7 @@ mod test {
         PrngSeedExt(Seed::from(seed)).encode(&mut buf);
         // build_and_marshall(&mut buf, PrngSeedExt.into(), seed, pad_len)?;
 
-        let pkt = Extensions::try_parse(&mut buf)?;
+        let pkt = Extensions::read(&mut buf)?;
         assert_eq!(Extensions::PrngSeed(PrngSeedExt::from(seed)), pkt);
 
         Ok(())

@@ -12,7 +12,7 @@
 //! for circuits on today's Tor.
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
-use crate::{common::colorize, Error, Result};
+use crate::{common::colorize, Error, Result, msgs::Extensions};
 
 use bytes::BufMut;
 use tor_bytes::SecretBuf;
@@ -91,10 +91,9 @@ pub trait ClientHandshake {
 
 pub trait ClientHandshakeComplete {
     type KeyGen;
-    type ServerAuxData;
     type Remainder;
     fn keygen(&self) -> Self::KeyGen;
-    fn extensions(&self) -> &Self::ServerAuxData;
+    fn extensions(&self) -> &[Extensions];
     fn remainder(&self) -> Self::Remainder;
 }
 

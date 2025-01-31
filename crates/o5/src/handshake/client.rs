@@ -127,12 +127,12 @@ pub struct HsComplete {
 
 impl ClientHandshakeComplete for HsComplete {
     type KeyGen = NtorV3KeyGenerator;
-    type ServerAuxData = Vec<NtorV3Extension>;
+    type Extension = NtorV3Extension;
     type Remainder = BytesMut;
     fn keygen(&self) -> Self::KeyGen {
         NtorV3KeyGenerator::new::<ClientRole>(self.xof_reader.clone())
     }
-    fn extensions(&self) -> &Self::ServerAuxData {
+    fn extensions(&self) -> &[Self::Extension] {
         &self.extensions
     }
     fn remainder(&self) -> Self::Remainder {

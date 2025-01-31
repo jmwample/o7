@@ -32,10 +32,14 @@ pub enum InvalidMessage {
     InvalidEmptyPayload,
     #[error("message was not acceptable in the present context")]
     InvalidContext,
-    #[error("message deviated from sormatting requirements: {0}")]
+    #[error("message deviated from formatting requirements: {0}")]
     InvalidDeviation(&'static str),
-    #[error("missing data for the named handshake payload value")]
+    #[error("missing data for the named handshake payload value: {0}")]
     MissingData(&'static str),
+    #[error("message or buffer contained unexpected extra bytes: {0}")]
+    ExcessData(&'static str),
+    #[error("message or buffer contained too few bytes")]
+    MessageTooShort,
 }
 
 impl From<InvalidMessage> for Error {

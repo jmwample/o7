@@ -168,9 +168,9 @@ impl ServerSession<Initialized> {
         let session_state: ServerSession<Established> = session.transition(Established {});
 
         codec.handshake_complete();
-        let o4 = ObfuscatedStream::new(stream, codec, Session::Server(session_state));
+        let obfs_stream = ObfuscatedStream::new(stream, codec, Session::Server(session_state));
 
-        Ok(O5Stream::from_o4(o4))
+        Ok(O5Stream::from_o5(obfs_stream))
     }
 }
 

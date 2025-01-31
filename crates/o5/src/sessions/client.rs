@@ -194,11 +194,11 @@ impl<K: OKemCore> ClientSession<Initialized, K> {
             match ext {
                 Extensions::PrngSeed(seed) => {
                     // PrngSeed should always be present in a successful server hello
-                    session.set_len_seed(seed.0);
+                    session.set_len_seed(seed.0.clone());
                 }
                 _ => {}
             }
-        } 
+        }
 
         let res = codec.decode(&mut hs_complete.remainder());
         // TODO: do something with the remainder

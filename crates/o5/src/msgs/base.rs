@@ -81,21 +81,25 @@ impl PayloadU16 {
         Self::new(Vec::new())
     }
 
-    pub fn encode_slice(slice: &[u8], bytes: &mut Vec<u8>) {
-        (slice.len() as u16).encode(bytes);
-        bytes.extend_from_slice(slice);
+    pub fn encode_slice<B:BufMut>(slice: &[u8], buf: &mut B) {
+        (slice.len() as u16).encode(buf);
+        buf.put_slice(slice);
     }
 }
 
 impl Codec<'_> for PayloadU16 {
-    fn encode<B:BufMut>(&self, bytes: &mut B) {
-        Self::encode_slice(&self.0, bytes);
+    fn encode<B:BufMut>(&self, buf: &mut B) {
+        Self::encode_slice(&self.0, buf);
     }
 
     fn read<B:Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
         let len = u16::read(r)? as usize;
-        let mut sub = r.sub(len)?;
-        let body = sub.rest().to_vec();
+        if !r.has_remaining() || r.remaining() < len {
+            return Err(InvalidMessage::MessageTooShort);
+        }
+        let mut body = vec![];
+        body.put(r.take(len));
+
         Ok(Self(body))
     }
 }
@@ -122,7 +126,7 @@ pub(super) fn hex<'a>(
 pub trait Codec<'a>: fmt::Debug + Sized {
     /// Function for encoding itself by appending itself to
     /// the provided writable Buffer object.
-    fn encode<B:BufMut>(&self, bytes: &mut B);
+    fn encode<B:BufMut>(&self, buf: &mut B);
 
     /// Function for decoding itself from the provided reader
     /// will return Some if the decoding was successful or
@@ -142,24 +146,28 @@ pub trait Codec<'a>: fmt::Debug + Sized {
     ///
     /// Returns `Err(InvalidMessage::ExcessData(_))` if
     /// `Self::read` does not read the entirety of `bytes`.
-    fn read_bytes(bytes: &'a [u8]) -> Result<Self, InvalidMessage> {
-        let mut reader = Bytes::from(bytes);
-        Self::read(&mut reader).and_then(|r| {
-            reader.expect_empty("read_bytes")?;
-            Ok(r)
+    fn read_bytes(mut buf: &'a [u8]) -> Result<Self, InvalidMessage> {
+        // let mut reader = Bytes::from(buf);
+        Self::read(&mut buf).and_then(|r| {
+            if buf.has_remaining() {
+                Err(InvalidMessage::ExcessData("read_bytes"))
+            } else {
+                Ok(r)
+            }
         })
     }
 }
 
 impl Codec<'_> for u8 {
-    fn encode<B:BufMut>(&self, bytes: &mut B) {
-        bytes.push(*self);
+    fn encode<B:BufMut>(&self, buf: &mut B) {
+        buf.put_u8(*self);
     }
 
     fn read<B:Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
-        match r.take(1) {
-            Some(&[byte]) => Ok(byte),
-            _ => Err(InvalidMessage::MissingData("u8")),
+        if r.has_remaining() {
+            Ok(r.get_u8())
+        }else {
+            Err(InvalidMessage::MissingData("u8"))
         }
     }
 }
@@ -170,16 +178,17 @@ pub(crate) fn put_u16(v: u16, out: &mut [u8]) {
 }
 
 impl Codec<'_> for u16 {
-    fn encode<B:BufMut>(&self, bytes: &mut B) {
+    fn encode<B:BufMut>(&self, buf: &mut B) {
         let mut b16 = [0u8; 2];
         put_u16(*self, &mut b16);
-        bytes.extend_from_slice(&b16);
+        buf.put_slice(&b16);
     }
 
     fn read<B:Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
-        match r.take(2) {
-            Some(&[b1, b2]) => Ok(Self::from_be_bytes([b1, b2])),
-            _ => Err(InvalidMessage::MissingData("u16")),
+        if r.has_remaining() && r.remaining() >= 2 {
+            Ok(r.get_u16())
+        } else {
+            Err(InvalidMessage::MissingData("u16"))
         }
     }
 }
