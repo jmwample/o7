@@ -197,14 +197,13 @@ mod test {
 
         let mut buf = BytesMut::new();
         let mut rng = rand::thread_rng();
-        let pad_len = rng.gen_range(0..100);
         let mut seed = [0_u8; Seed::BYTE_LEN];
         rng.fill_bytes(&mut seed);
 
         PrngSeedExt(Seed::from(seed)).encode(&mut buf);
-        // build_and_marshall(&mut buf, PrngSeedExt.into(), seed, pad_len)?;
 
-        let pkt = Extensions::read(&mut buf)?;
+        let mut msg = Bytes::from(buf.to_vec());
+        let pkt = Extensions::read(&mut msg)?;
         assert_eq!(Extensions::PrngSeed(PrngSeedExt::from(seed)), pkt);
 
         Ok(())
