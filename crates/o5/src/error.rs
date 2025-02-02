@@ -47,13 +47,6 @@ pub enum Error {
         // #[source]
         err: tor_bytes::Error,
     },
-    // TODO: do we need to keep this?
-    CellDecodeErr {
-        /// What we were trying to parse.
-        object: &'static str,
-        /// The error that occurred while parsing it.
-        err: tor_cell::Error,
-    },
     HandshakeErr(RelayHandshakeError),
 }
 
@@ -78,9 +71,6 @@ impl Display for Error {
                 write!(f, "Tried to extract too many bytes from a KDF")
             }
             Error::BytesError { object, err } => write!(f, "Unable to parse {object}: {err}"),
-            Error::CellDecodeErr { object, err } => {
-                write!(f, "Unable to decode cell {object}: {err}")
-            }
             Error::HandshakeErr(err) => write!(f, "handshake failed or unable to complete: {err}"),
 
             Error::O5Framing(e) => write!(f, "obfs4 framing error: {e}"),
@@ -194,15 +184,6 @@ impl From<crypto_secretbox::Error> for Error {
 impl From<tor_error::Bug> for Error {
     fn from(value: tor_error::Bug) -> Self {
         Error::Bug(value)
-    }
-}
-
-impl From<tor_cell::Error> for Error {
-    fn from(value: tor_cell::Error) -> Self {
-        Error::CellDecodeErr {
-            object: "",
-            err: value,
-        }
     }
 }
 

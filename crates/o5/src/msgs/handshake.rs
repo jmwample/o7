@@ -6,6 +6,7 @@ use crate::{
         encrypt, Authcode, CHSMaterials, EphemeralPub, HandshakeEphemeralSecret,
         NtorV3Client as Client, SHSMaterials,
     },
+    msgs::Extensions,
     traits::OKemCore,
     Digest, Result,
 };
@@ -18,7 +19,6 @@ use ptrs::trace;
 use rand::Rng;
 use rand_core::CryptoRngCore;
 use tor_bytes::{EncodeError, EncodeResult, Writer};
-use tor_cell::relaycell::extend::NtorV3Extension;
 use zeroize::Zeroizing;
 
 use core::borrow::Borrow;
@@ -181,7 +181,7 @@ impl<K: OKemCore> ChsState for ClientStateOutgoing<K> {}
 /// State tracked when parsing and operating on an incoming client handshake
 pub struct ClientStateIncoming<D: Digest> {
     ephemeral_secret: HandshakeEphemeralSecret<D>,
-    extensions: Vec<NtorV3Extension>,
+    extensions: Vec<Extensions>,
 }
 impl<D: Digest> ChsState for ClientStateIncoming<D> {}
 
@@ -279,7 +279,7 @@ where
     ) -> EncodeResult<HandshakeEphemeralSecret<D>> {
         // serialize our extensions into a message
         let mut message = BytesMut::new();
-        NtorV3Extension::write_many_onto(self.state.hs_materials.aux_data.borrow(), &mut message)?;
+        Extensions::encode_many(&self.state.hs_materials.aux_data, &mut message);
 
         // -------------------------------- [ ST-PQ-OBFS ] -------------------------------- //
         // Security Theoretic, Post-Quantum safe, Obfuscated Key exchange

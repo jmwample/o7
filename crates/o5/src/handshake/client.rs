@@ -17,6 +17,7 @@ use crate::{
     msgs::handshake::{
         ClientHandshakeMessage, ClientStateOutgoing, ServerHandshakeMessage, ServerStateIncoming,
     },
+    msgs::{Codec, Extensions},
     traits::{DigestSizes, FramingSizes, OKemCore},
     Digest, Error, Result, Server,
 };
@@ -31,7 +32,6 @@ use rand::{CryptoRng, Rng, RngCore};
 use rand_core::CryptoRngCore;
 use subtle::ConstantTimeEq;
 use tor_bytes::{EncodeResult, Reader, SecretBuf, Writer};
-use tor_cell::relaycell::extend::NtorV3Extension;
 use tor_error::into_internal;
 use tor_llcrypto::{
     d::{Sha3_256, Shake256, Shake256Reader},
@@ -77,7 +77,7 @@ impl<K: OKemCore, D: Digest> HandshakeState<K, D> {
 pub(crate) struct HandshakeMaterials<K: OKemCore> {
     pub(crate) node_pubkey: IdentityPublicKey<K>,
     pub(crate) session_id: String,
-    pub(crate) aux_data: Vec<NtorV3Extension>,
+    pub(crate) aux_data: Vec<Extensions>,
 }
 
 impl<K: OKemCore> HandshakeMaterials<K> {
@@ -89,7 +89,7 @@ impl<K: OKemCore> HandshakeMaterials<K> {
         }
     }
 
-    pub fn with_early_data(mut self, data: impl AsRef<[NtorV3Extension]>) -> Self {
+    pub fn with_early_data(mut self, data: impl AsRef<[Extensions]>) -> Self {
         self.aux_data = data.as_ref().to_vec();
         self
     }
@@ -101,7 +101,7 @@ impl<K: OKemCore> HandshakeMaterials<K> {
 
 impl<K: OKemCore> ClientHandshakeMaterials for HandshakeMaterials<K> {
     type IdentityKeyType = IdentityPublicKey<K>;
-    type ClientAuxData = Vec<NtorV3Extension>;
+    type ClientAuxData = Vec<Extensions>;
 
     fn node_pubkey(&self) -> &Self::IdentityKeyType {
         &self.node_pubkey
@@ -121,18 +121,17 @@ pub(crate) struct NtorV3Client<K: OKemCore, D: Digest> {
 /// State resulting from successful client handshake.
 pub struct HsComplete {
     xof_reader: NtorV3XofReader,
-    extensions: Vec<NtorV3Extension>,
+    extensions: Vec<Extensions>,
     remainder: BytesMut,
 }
 
 impl ClientHandshakeComplete for HsComplete {
     type KeyGen = NtorV3KeyGenerator;
-    type Extension = NtorV3Extension;
     type Remainder = BytesMut;
     fn keygen(&self) -> Self::KeyGen {
         NtorV3KeyGenerator::new::<ClientRole>(self.xof_reader.clone())
     }
-    fn extensions(&self) -> &[Self::Extension] {
+    fn extensions(&self) -> &[Extensions] {
         &self.extensions
     }
     fn remainder(&self) -> Self::Remainder {
@@ -169,10 +168,8 @@ impl<K: OKemCore, D: Digest> ClientHandshake for NtorV3Client<K, D> {
 
         // If no material for extensions was provided, don't parse them
         let extensions = if !message.is_empty() {
-            NtorV3Extension::decode(&message).map_err(|err| Error::CellDecodeErr {
-                object: "ntor v3 extensions",
-                err,
-            })?
+            let mut buf = bytes::Bytes::from(message);
+            Extensions::read_many(&mut buf)?
         } else {
             Vec::new()
         };

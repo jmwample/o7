@@ -21,7 +21,6 @@ pub(crate) const SEED_LENGTH: usize = 16 + SIZE;
 pub struct Seed([u8; SEED_LENGTH]);
 
 impl Seed {
-
     pub const BYTE_LEN: usize = SEED_LENGTH;
 
     pub fn new() -> Result<Self> {

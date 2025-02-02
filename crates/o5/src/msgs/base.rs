@@ -3,8 +3,8 @@
 use crate::{constants::*, framing::FrameError, msgs::InvalidMessage, Error};
 
 use bytes::Bytes;
-use tokio_util::bytes::{Buf, BufMut};
 use ptrs::trace;
+use tokio_util::bytes::{Buf, BufMut};
 
 use core::fmt;
 
@@ -81,18 +81,18 @@ impl PayloadU16 {
         Self::new(Vec::new())
     }
 
-    pub fn encode_slice<B:BufMut>(slice: &[u8], buf: &mut B) {
+    pub fn encode_slice<B: BufMut>(slice: &[u8], buf: &mut B) {
         (slice.len() as u16).encode(buf);
         buf.put_slice(slice);
     }
 }
 
 impl Codec<'_> for PayloadU16 {
-    fn encode<B:BufMut>(&self, buf: &mut B) {
+    fn encode<B: BufMut>(&self, buf: &mut B) {
         Self::encode_slice(&self.0, buf);
     }
 
-    fn read<B:Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
+    fn read<B: Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
         let len = u16::read(r)? as usize;
         if !r.has_remaining() || r.remaining() < len {
             return Err(InvalidMessage::MessageTooShort);
@@ -126,12 +126,12 @@ pub(super) fn hex<'a>(
 pub trait Codec<'a>: fmt::Debug + Sized {
     /// Function for encoding itself by appending itself to
     /// the provided writable Buffer object.
-    fn encode<B:BufMut>(&self, buf: &mut B);
+    fn encode<B: BufMut>(&self, buf: &mut B);
 
     /// Function for decoding itself from the provided reader
     /// will return Some if the decoding was successful or
     /// None if it was not.
-    fn read<B:Buf>(_: &mut B) -> Result<Self, InvalidMessage>;
+    fn read<B: Buf>(_: &mut B) -> Result<Self, InvalidMessage>;
 
     /// Convenience function for encoding the implementation
     /// into a vec and returning it
@@ -159,14 +159,14 @@ pub trait Codec<'a>: fmt::Debug + Sized {
 }
 
 impl Codec<'_> for u8 {
-    fn encode<B:BufMut>(&self, buf: &mut B) {
+    fn encode<B: BufMut>(&self, buf: &mut B) {
         buf.put_u8(*self);
     }
 
-    fn read<B:Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
+    fn read<B: Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
         if r.has_remaining() {
             Ok(r.get_u8())
-        }else {
+        } else {
             Err(InvalidMessage::MissingData("u8"))
         }
     }
@@ -178,13 +178,13 @@ pub(crate) fn put_u16(v: u16, out: &mut [u8]) {
 }
 
 impl Codec<'_> for u16 {
-    fn encode<B:BufMut>(&self, buf: &mut B) {
+    fn encode<B: BufMut>(&self, buf: &mut B) {
         let mut b16 = [0u8; 2];
         put_u16(*self, &mut b16);
         buf.put_slice(&b16);
     }
 
-    fn read<B:Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
+    fn read<B: Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
         if r.has_remaining() && r.remaining() >= 2 {
             Ok(r.get_u16())
         } else {

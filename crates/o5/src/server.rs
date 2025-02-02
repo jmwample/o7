@@ -10,6 +10,7 @@ use crate::{
     constants::*,
     framing::{FrameError, Marshall, O5Codec, TryParse, KEY_LENGTH},
     handshake::{IdentityPublicKey, IdentitySecretKey},
+    msgs::Extensions,
     proto::{MaybeTimeout, O5Stream},
     sessions::{Initialized, ServerSession, Session},
     traits::{DigestSizes, FramingSizes, OKemCore},
@@ -29,7 +30,6 @@ use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
 use tokio_util::codec::Encoder;
-use tor_cell::relaycell::extend::NtorV3Extension;
 
 const STATE_FILENAME: &str = "o5_state.json";
 
@@ -273,7 +273,7 @@ impl<K: OKemCore, D: Digest> Server<K, D> {
     {
         let session = self.new_server_session()?;
         let deadline = self.handshake_timeout.map(|d| Instant::now() + d);
-        let mut null_extension_handler = |_: &[NtorV3Extension]| None;
+        let mut null_extension_handler = |_: &[Extensions]| None;
 
         session
             .handshake(&self, stream, &mut null_extension_handler, deadline)

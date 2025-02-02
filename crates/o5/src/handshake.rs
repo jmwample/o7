@@ -233,6 +233,7 @@ mod test {
     };
     use crate::constants::{NODE_ID_LENGTH, SEED_LENGTH};
     use crate::handshake::server::ServerHandshake;
+    use crate::msgs::Extensions;
     use crate::test_utils::init_subscriber;
     use crate::Server;
 
@@ -246,7 +247,6 @@ mod test {
     use kemeleon::{MlKem768, OKemCore};
     use rand::thread_rng;
     use tor_basic_utils::test_rng::testing_rng;
-    use tor_cell::relaycell::extend::NtorV3Extension;
     use tor_llcrypto::pk::ed25519::Ed25519Identity;
 
     type O5Client = client::NtorV3Client<MlKem768, Sha3_256>;
@@ -310,7 +310,7 @@ mod test {
         let mut c_handshake = BytesMut::new();
         let mut c_state = O5Client::client1(materials, &mut c_handshake).unwrap();
 
-        let mut rep = |_: &[NtorV3Extension]| Some(vec![]);
+        let mut rep = |_: &[Extensions]| Some(vec![]);
 
         let server = Server::<MlKem768, Sha3_256>::new_from_key(relay_private);
         let shs_materials = SHSMaterials {
@@ -339,15 +339,16 @@ mod test {
         init_subscriber();
         let relay_private = IdentitySecretKey::random_from_rng(&mut testing_rng());
 
-        let client_exts = vec![NtorV3Extension::RequestCongestionControl];
-        let reply_exts = vec![NtorV3Extension::AckCongestionControl { sendme_inc: 42 }];
+        let client_exts = vec![Extensions::Ping];
+        let reply_exts = vec![Extensions::Pong];
+
         let materials = CHSMaterials::new(&relay_private.pk, "client_session_1".into())
-            .with_early_data([NtorV3Extension::RequestCongestionControl]);
+            .with_early_data([Extensions::Ping]);
 
         let mut c_handshake = BytesMut::new();
         let mut c_state = O5Client::client1(materials, &mut c_handshake).unwrap();
 
-        let mut rep = |msg: &[NtorV3Extension]| -> Option<Vec<NtorV3Extension>> {
+        let mut rep = |msg: &[Extensions]| -> Option<Vec<Extensions>> {
             assert_eq!(msg, client_exts);
             Some(reply_exts.clone())
         };
@@ -440,4 +441,3 @@ mod test {
         assert_eq!(c_keys[..], hex!("9c19b631fd94ed86a817e01f6c80b0743a43f5faebd39cfaa8b00fa8bcc65c3bfeaa403d91acbd68a821bf6ee8504602b094a254392a07737d5662768c7a9fb1b2814bb34780eaee6e867c773e28c212ead563e98a1cd5d5b4576f5ee61c59bde025ff2851bb19b721421694f263818e3531e43a9e4e3e2c661e2ad547d8984caa28ebecd3e4525452299be26b9185a20a90ce1eac20a91f2832d731b54502b09749b5a2a2949292f8cfcbeffb790c7790ed935a9d251e7e336148ea83b063a5618fcff674a44581585fd22077ca0e52c59a24347a38d1a1ceebddbf238541f226b8f88d0fb9c07a1bcd2ea764bbbb5dacdaf5312a14c0b9e4f06309b0333b4a")[..]);
     }
 }
-

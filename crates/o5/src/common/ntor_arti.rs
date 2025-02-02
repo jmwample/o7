@@ -12,7 +12,7 @@
 //! for circuits on today's Tor.
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
-use crate::{common::colorize, Error, Result, msgs::Extensions};
+use crate::{common::colorize, msgs::Extensions, Error, Result};
 
 use bytes::BufMut;
 use tor_bytes::SecretBuf;

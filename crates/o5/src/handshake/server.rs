@@ -6,11 +6,13 @@ use crate::{
         utils::{find_mac_mark, get_epoch_hour},
     },
     constants::*,
-    handshake::client::NtorV3Client as Client,
-    handshake::*,
-    msgs::handshake::{
-        ClientHandshakeMessage, ClientStateIncoming, ClientStateOutgoing, ServerHandshakeMessage,
-        ServerStateOutgoing,
+    handshake::{client::NtorV3Client as Client, *},
+    msgs::{
+        handshake::{
+            ClientHandshakeMessage, ClientStateIncoming, ClientStateOutgoing,
+            ServerHandshakeMessage, ServerStateOutgoing,
+        },
+        Extensions,
     },
     traits::{DigestSizes, FramingSizes, OKemCore},
     Digest, Error, Result, Server,
@@ -29,7 +31,6 @@ use rand_core::{CryptoRng, CryptoRngCore, RngCore};
 use sha3::Shake256;
 use subtle::ConstantTimeEq;
 use tor_bytes::{Reader, SecretBuf, Writer};
-use tor_cell::relaycell::extend::NtorV3Extension;
 use tor_error::into_internal;
 use tor_llcrypto::pk::ed25519::Ed25519Identity;
 use typenum::Unsigned;
@@ -67,8 +68,8 @@ impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
 
 impl<K: OKemCore, D: Digest> ntor_arti::ServerHandshake for ServerHandshake<K, D> {
     type KeyGen = NtorV3KeyGenerator;
-    type ClientAuxData = [NtorV3Extension];
-    type ServerAuxData = Vec<NtorV3Extension>;
+    type ClientAuxData = [Extensions];
+    type ServerAuxData = Vec<Extensions>;
 
     fn server<REPLY: AuxDataReply<Self>, T: AsRef<[u8]>, Out: BufMut>(
         &self,
@@ -76,11 +77,11 @@ impl<K: OKemCore, D: Digest> ntor_arti::ServerHandshake for ServerHandshake<K, D
         msg: T,
         reply_buf: &mut Out,
     ) -> RelayHandshakeResult<Self::KeyGen> {
-        let mut bytes_reply_fn = |bytes: &[u8]| -> Option<Vec<u8>> {
-            let client_exts = NtorV3Extension::decode(bytes).ok()?;
+        let mut bytes_reply_fn = |mut bytes: &[u8]| -> Option<Vec<u8>> {
+            let client_exts = Extensions::read_many(&mut bytes).ok()?;
             let reply_exts = reply_fn.reply(&client_exts)?;
             let mut out = vec![];
-            NtorV3Extension::write_many_onto(&reply_exts, &mut out).ok()?;
+            Extensions::encode_many(&reply_exts, &mut out);
             Some(out)
         };
         let mut rng = rand::thread_rng();
@@ -249,6 +250,13 @@ impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
         // todo!("Add extensions and prng seed to the server hello");
     }
 
+    /// Try to pars the client handshake validating key elements of the key exchange in the process
+    //
+    // Is it important that the context for the auth HMAC uses the non obfuscated encoding of the
+    // ciphertext sent by the client (ciphertext created using the server's identity encapsulation
+    // key) as opposed to the obfuscated encoding?
+    //
+    // No this should not impact things.
     fn try_parse_client_handshake(
         &self,
         b: impl AsRef<[u8]>,
@@ -397,37 +405,5 @@ impl<K: OKemCore, D: Digest> ServerHandshake<K, D> {
             ClientStateIncoming::new(ephemeral_secret),
             Some(epoch_hour),
         ))
-
-        // Is it important that the context for the auth HMAC uses the non obfuscated encoding of the
-        // ciphertext sent by the client (ciphertext created using the server's identity encapsulation
-        // key) as opposed to the obfuscated encoding?
-        //
-        // No this should not impact things.
-
-        // -----------------------------------[NTor V3]-------------------------------
-        // // TODO: Maybe use the Reader / Ntor interface, it is nice and clean.
-        // // Decode the message.
-
-        // let mut r = Reader::from_slice(message);
-        // let id: Ed25519Identity = r.extract()?;
-        // let requested_pk: IdentityPublicKey<K> = r.extract()?;
-        // let client_pk: SessionPublicKey = r.extract()?;
-        // let client_msg = if let Some(msg_len) = r.remaining().checked_sub(MAC_LEN) {
-        //     r.take(msg_len)?
-        // } else {
-        //     let deficit = (MAC_LEN - r.remaining())
-        //         .try_into()
-        //         .expect("miscalculated!");
-        //     return Err(Error::incomplete_error(deficit).into());
-        // };
-
-        // let msg_mac: MessageMac = r.extract()?;
-        // r.should_be_exhausted()?;
-
-        // // See if we recognize the provided (id,requested_pk) pair.
-        // let keypair = match keys.matches(id, requested_pk.pk).into() {
-        //     Some(k) => keys,
-        //     None => return Err(RelayHandshakeError::MissingKey),
-        // };
     }
 }

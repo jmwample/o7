@@ -96,7 +96,6 @@ impl Messages {
         let length = buf.get_u16() as usize;
 
         match pt {
-
             MessageTypes::Padding => Ok(Messages::Padding(length as u16)),
 
             MessageTypes::RawPayload => {

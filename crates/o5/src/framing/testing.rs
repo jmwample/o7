@@ -39,7 +39,12 @@ fn encode_decode() -> Result<()> {
 
     let mut b = bytes::BytesMut::with_capacity(LENGTH_LENGTH + MESSAGE_OVERHEAD + message.len());
     let mut input = BytesMut::new();
-    build_and_marshall(&mut input, MessageTypes::RawPayload.into(), message.clone(), 0)?;
+    build_and_marshall(
+        &mut input,
+        MessageTypes::RawPayload.into(),
+        message.clone(),
+        0,
+    )?;
     codec.encode(&mut input, &mut b)?;
 
     let Messages::RawPayload(plaintext) = codec.decode(&mut b)?.expect("failed to decode") else {

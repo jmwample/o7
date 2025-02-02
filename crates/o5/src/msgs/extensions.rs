@@ -19,28 +19,67 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use core::fmt::Debug;
 
-#[derive(Debug, PartialEq, )]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Extensions {
-        Padding,
-        PrngSeed(PrngSeedExt),
-        ClientParams(),
-        ServerParams(),
-        CipherSuiteOffer(),
-        CipherSuiteAccept(),
-        Other(OtherExt),
+    Padding(usize),
+    PrngSeed(PrngSeedExt),
+    ClientParams(),
+    ServerParams(),
+    CipherSuiteOffer(),
+    CipherSuiteAccept(),
+    RawData(Vec<u8>),
+
+    Ping,
+    Pong,
+
+    Other(OtherExt),
 }
 
 impl Codec<'_> for Extensions {
-    fn encode<B: BufMut>(&self, bytes: &mut B) {
-    }
+    fn encode<B: BufMut>(&self, bytes: &mut B) {}
 
     fn read<B: Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
+        let ext_type = ExtensionType::read(r)?;
+
+        let ext = match ext_type {
+            ExtensionType::Padding => {
+                let len = u16::read(r)? as usize;
+                r.advance(len);
+                Extensions::Padding(len)
+            }
+            ExtensionType::ClientParams => todo!(),
+            ExtensionType::ServerParams => todo!(),
+            ExtensionType::PrngSeed => Extensions::PrngSeed(PrngSeedExt::read(r)?),
+            ExtensionType::RawData => {
+                let data = PayloadU16::read(r)?;
+                Extensions::RawData(data.0)
+            }
+            ExtensionType::CipherSuiteOffer => todo!(),
+            ExtensionType::CipherSuiteAccept => todo!(),
+            ExtensionType::Ping => {
+                let len = u16::read(r)? as usize;
+                if len != 0 {
+                    // Ping should include length of 0x0000_u16
+                    r.advance(len);
+                }
+                Extensions::Ping
+            }
+            ExtensionType::Pong => {
+                let len = u16::read(r)? as usize;
+                if len != 0 {
+                    // Pong should include length of 0x0000_u16
+                    r.advance(len);
+                }
+                Extensions::Pong
+            }
+            ExtensionType::Unknown(typ) => Extensions::Other(OtherExt::read(typ, r)?),
+        };
+        Ok(ext)
     }
 }
 
 impl Codec<'_> for Vec<Extensions> {
-    fn encode<B: BufMut>(&self, bytes: &mut B) {
-    }
+    fn encode<B: BufMut>(&self, bytes: &mut B) {}
 
     fn read<B: Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
         Ok(Vec::new())
@@ -48,15 +87,21 @@ impl Codec<'_> for Vec<Extensions> {
 }
 
 impl Extensions {
-    fn encode_many<B: BufMut>(exts: impl AsRef<[Self]> , r: &mut B) {
+    // Encode a set of Extensions into the provided buffer
+    pub fn encode_many<B: BufMut>(exts: impl AsRef<[Self]>, r: &mut B) {
         exts.as_ref().into_iter().for_each(|ext| ext.encode(r));
+    }
+
+    /// Real all available extensions in the provided buffer
+    pub fn read_many<B: Buf>(r: &mut B) -> Result<Vec<Self>, InvalidMessage> {
+        Ok(Vec::new()) // TODO
     }
 }
 
 /// As part of the obfs5 handshake the server should always include a Prng Seed
 /// in their response message indicating a successful handshake.
 #[derive(Clone, Debug, PartialEq)]
-pub struct PrngSeedExt (pub(crate) Seed);
+pub struct PrngSeedExt(pub(crate) Seed);
 
 impl Codec<'_> for PrngSeedExt {
     fn encode<B: BufMut>(&self, buf: &mut B) {
@@ -66,7 +111,9 @@ impl Codec<'_> for PrngSeedExt {
     fn read<B: Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
         let p = PayloadU16::read(r)?;
         if p.0.len() != Seed::BYTE_LEN {
-            return Err(InvalidMessage::InvalidDeviation("incorrect length for prngseed ext"));
+            return Err(InvalidMessage::InvalidDeviation(
+                "incorrect length for prngseed ext",
+            ));
         }
 
         let body = Seed::try_from(p.0)
@@ -77,14 +124,14 @@ impl Codec<'_> for PrngSeedExt {
 
 impl From<[u8; Seed::BYTE_LEN]> for PrngSeedExt {
     fn from(value: [u8; Seed::BYTE_LEN]) -> Self {
-        Self( Seed::from(value) )
+        Self(Seed::from(value))
     }
 }
 
 /// Extension other than those predefined in this library.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OtherExt {
-    pub(crate) typ: ExtensionType,
+    pub(crate) typ: u16,
     pub(crate) payload: PayloadU16,
 }
 
@@ -93,7 +140,7 @@ impl OtherExt {
         self.payload.encode(bytes);
     }
 
-    fn read<B: Buf>(typ: ExtensionType, r: &mut B) -> Result<Self, InvalidMessage> {
+    fn read<B: Buf>(typ: u16, r: &mut B) -> Result<Self, InvalidMessage> {
         let payload = PayloadU16::read(r)?;
         Ok(Self { typ, payload })
     }
@@ -102,7 +149,7 @@ impl OtherExt {
 enum_builder! {
     /// The `ExtensionType` protocol enum.  Values in this enum are taken
     /// from the various RFCs covering TLS, and are listed by IANA.
-    /// The `Unknown` item is used when processing unrecognised ordinals.
+    /// The `Unknown` item is used when processing unrecognised Type Indicators.
     #[repr(u16)]
     pub enum ExtensionType {
         // We definitely want these
@@ -110,11 +157,13 @@ enum_builder! {
         ClientParams => 0x0001,
         ServerParams => 0x0002,
         PrngSeed => 0x0003,
+        RawData => 0x0004,
 
         CipherSuiteOffer => 0x0010,
         CipherSuiteAccept => 0x0011,
 
-
+        Ping => 0xff00,
+        Pong => 0xff01,
 
         // // We maybe want these
         // ClientAuthz => 0x0011,
@@ -122,45 +171,25 @@ enum_builder! {
         // SessionTicket => 0x0023,
         // EarlyData => 0x002a,
         // TransportParameters => 0x0039,
+        // CongestionControl => 0x????,
+    }
+}
 
-        // // We probably don't need these
-        // ServerName => 0x0000,
-        // MaxFragmentLength => 0x0001,
-        // ClientCertificateUrl => 0x0002,
-        // TrustedCAKeys => 0x0003,
-        // TruncatedHMAC => 0x0004,
-        // StatusRequest => 0x0005,
-        // UserMapping => 0x0006,
-        // CertificateType => 0x0009,
-        // EllipticCurves => 0x000a,
-        // ECPointFormats => 0x000b,
-        // SRP => 0x000c,
-        // SignatureAlgorithms => 0x000d,
-        // UseSRTP => 0x000e,
-        // ALProtocolNegotiation => 0x0010,
-        // SCT => 0x0012,
-        // ClientCertificateType => 0x0013,
-        // ServerCertificateType => 0x0014,
-        // ExtendedMasterSecret => 0x0017,
-        // CompressCertificate => 0x001b,
-        // PreSharedKey => 0x0029,
-        // SupportedVersions => 0x002b,
-        // Cookie => 0x002c,
-        // PSKKeyExchangeModes => 0x002d,
-        // TicketEarlyDataInfo => 0x002e,
-        // CertificateAuthorities => 0x002f,
-        // OIDFilters => 0x0030,
-        // PostHandshakeAuth => 0x0031,
-        // SignatureAlgorithmsCert => 0x0032,
-        // KeyShare => 0x0033,
+impl Codec<'_> for ExtensionType {
+    fn encode<B: BufMut>(&self, buf: &mut B) {
+        u16::from(self.clone()).encode(buf);
+    }
+
+    fn read<B: Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
+        Ok(u16::read(r)?.into())
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use rand::{Rng, RngCore};
     use crate::test_utils::init_subscriber;
+    use rand::{Rng, RngCore};
 
     #[test]
     fn prngseed() -> Result<(), InvalidMessage> {
