@@ -10,7 +10,7 @@
 use crate::{
     common::drbg::Seed,
     msgs::{
-        base::{Codec, PayloadU16},
+        base::{hex, Codec, PayloadU16},
         InvalidMessage,
     },
 };
@@ -36,7 +36,21 @@ pub enum Extensions {
 }
 
 impl Codec<'_> for Extensions {
-    fn encode<B: BufMut>(&self, bytes: &mut B) {}
+    fn encode<B: BufMut>(&self, buf: &mut B) {
+        let ext_typ = ExtensionType::from(self);
+        ext_typ.encode(buf);
+        let mut tmp_buf = BytesMut::new();
+        match self {
+            Extensions::PrngSeed(prng_seed_ext) => prng_seed_ext.encode(&mut tmp_buf),
+            _ => todo!(),
+        }
+        let len = tmp_buf.len() as u16;
+
+        len.encode(buf);
+        if !tmp_buf.is_empty() {
+            buf.put(tmp_buf);
+        }
+    }
 
     fn read<B: Buf>(r: &mut B) -> Result<Self, InvalidMessage> {
         let ext_type = ExtensionType::read(r)?;
@@ -100,7 +114,7 @@ impl Extensions {
 
 /// As part of the obfs5 handshake the server should always include a Prng Seed
 /// in their response message indicating a successful handshake.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PrngSeedExt(pub(crate) Seed);
 
 impl Codec<'_> for PrngSeedExt {
@@ -122,9 +136,9 @@ impl Codec<'_> for PrngSeedExt {
     }
 }
 
-impl From<[u8; Seed::BYTE_LEN]> for PrngSeedExt {
-    fn from(value: [u8; Seed::BYTE_LEN]) -> Self {
-        Self(Seed::from(value))
+impl core::fmt::Debug for PrngSeedExt {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        hex(f, &self.0.to_bytes())
     }
 }
 
@@ -168,10 +182,26 @@ enum_builder! {
         // // We maybe want these
         // ClientAuthz => 0x0011,
         // ServerAuthz => 0x0012,
-        // SessionTicket => 0x0023,
-        // EarlyData => 0x002a,
-        // TransportParameters => 0x0039,
         // CongestionControl => 0x????,
+    }
+}
+
+impl From<&Extensions> for ExtensionType {
+    fn from(value: &Extensions) -> Self {
+        match value {
+            Extensions::Padding(usize) => ExtensionType::Padding,
+            Extensions::PrngSeed(_) => ExtensionType::PrngSeed,
+            Extensions::ClientParams() => ExtensionType::ClientParams,
+            Extensions::ServerParams() => ExtensionType::ServerParams,
+            Extensions::CipherSuiteOffer() => ExtensionType::CipherSuiteOffer,
+            Extensions::CipherSuiteAccept() => ExtensionType::CipherSuiteAccept,
+            Extensions::RawData(_) => ExtensionType::RawData,
+
+            Extensions::Ping => ExtensionType::Ping,
+            Extensions::Pong => ExtensionType::Pong,
+
+            Extensions::Other(ext) => ExtensionType::Unknown(ext.typ),
+        }
     }
 }
 
@@ -200,11 +230,15 @@ mod test {
         let mut seed = [0_u8; Seed::BYTE_LEN];
         rng.fill_bytes(&mut seed);
 
-        PrngSeedExt(Seed::from(seed)).encode(&mut buf);
+        let ext = Extensions::PrngSeed(PrngSeedExt(Seed::from(seed)));
+        println!("{ext:?}");
 
+        ext.encode(&mut buf);
+
+        println!("{:?}", hex::encode(&buf));
         let mut msg = Bytes::from(buf.to_vec());
         let pkt = Extensions::read(&mut msg)?;
-        assert_eq!(Extensions::PrngSeed(PrngSeedExt::from(seed)), pkt);
+        assert_eq!(Extensions::PrngSeed(PrngSeedExt(Seed::from(seed))), pkt);
 
         Ok(())
     }
