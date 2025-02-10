@@ -80,7 +80,7 @@ filetime = {version="0.2.25", optional=true}
 [dev-dependencies]
 tracing-subscriber = "0.3.18"
 hex-literal = "0.4.1"
-tor-basic-utils = "0.25.0"
+tor-basic-utils = "0.27.0"
 
 # benches
 # criterion = "0.5"
