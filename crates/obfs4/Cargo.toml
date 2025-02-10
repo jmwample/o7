@@ -55,7 +55,7 @@ bytes = "1.5.0"
 ## ntor_arti
 tor-cell = "0.25.0"
 tor-llcrypto = "0.25.0"
-tor-error = "0.25.0"
+tor-error = "0.27.0"
 tor-bytes = "0.25.0"
 cipher = "0.4.4"
 zeroize = "1.7.0"
